@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wta.exe resolve-command *)",
+      "Bash(rtk ls *)",
+      "WebSearch"
+    ]
+  }
+}

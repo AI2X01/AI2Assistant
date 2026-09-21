@@ -1,0 +1,11 @@
+D:\code\AI2Assistant\src-tauri\target_check\debug\deps\string_cache-9d44e547e1e9c339.d: C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\lib.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\atom.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\dynamic_set.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\static_sets.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\trivial_impls.rs
+
+D:\code\AI2Assistant\src-tauri\target_check\debug\deps\libstring_cache-9d44e547e1e9c339.rlib: C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\lib.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\atom.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\dynamic_set.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\static_sets.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\trivial_impls.rs
+
+D:\code\AI2Assistant\src-tauri\target_check\debug\deps\libstring_cache-9d44e547e1e9c339.rmeta: C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\lib.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\atom.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\dynamic_set.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\static_sets.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\trivial_impls.rs
+
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\lib.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\atom.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\dynamic_set.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\static_sets.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\string_cache-0.9.0\src\trivial_impls.rs:

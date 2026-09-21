@@ -2,10 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   Matter,
   LogItem,
+  InboxLogItem,
   TodoItem,
   AppConfig,
   AIParseResult,
   ConfirmRoutePayload,
+  CategorizePayload,
+  CapturedContext,
 } from '../types';
 
 // 检测是否处于 Tauri 环境
@@ -29,6 +32,10 @@ let mockMatters: Matter[] = [
     total_todos_count: 3,
     latest_log_snippet: '张总在微信群强调周三上午10点前提交白皮书终版',
     latest_log_time: '2026-09-20 23:10:00',
+    latest_todo_content: '补全白皮书性能指标与基准压测数据',
+    latest_todo_due_time: '2026-09-23 10:00:00',
+    latest_todo_status: 'pending',
+    related_contacts: 'A银行项目交付群, 张总, 架构师李工',
   },
   {
     id: 'm_002',
@@ -46,6 +53,10 @@ let mockMatters: Matter[] = [
     total_todos_count: 1,
     latest_log_snippet: '企微收到供应商技术选型参数手册',
     latest_log_time: '2026-09-19 16:30:00',
+    latest_todo_content: '催促两家核心供应商在周五前提交二期红外传感器阶梯报价单',
+    latest_todo_due_time: '2026-09-25 18:00:00',
+    latest_todo_status: 'pending',
+    related_contacts: '二期巡检硬件组, 传感器供应商交流群, Leo',
   },
   {
     id: 'm_003',
@@ -63,6 +74,10 @@ let mockMatters: Matter[] = [
     total_todos_count: 1,
     latest_log_snippet: '联通短信通知套餐升级已生效',
     latest_log_time: '2026-09-18 11:20:00',
+    latest_todo_content: '周六上午等待师傅上门FTTR光纤布线与测速验收',
+    latest_todo_due_time: '2026-09-26 10:00:00',
+    latest_todo_status: 'pending',
+    related_contacts: '中国联通客户经理, 安装师傅小周, 家庭群',
   },
 ];
 
@@ -119,7 +134,28 @@ let mockConfig: AppConfig = {
   capture_shortcut: 'Alt+A',
   main_window_shortcut: 'Alt+Shift+Space',
   auto_archive_confidence: 0.8,
+  user_profile: '我是项目负责人兼质检主管，负责多语种与方言数据标注质检项目。常见团队与对接人包括张总、Leo、陈伟豪、李棠佳等。',
+  theme: 'system',
 };
+
+export function normalizeTodoTime(timeStr?: string): string | undefined {
+  if (!timeStr) return undefined;
+  const trimmed = timeStr.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.endsWith('23:59:59')) {
+    return trimmed.replace('23:59:59', '22:00:00');
+  }
+  if (trimmed.endsWith('23:59:00')) {
+    return trimmed.replace('23:59:00', '22:00:00');
+  }
+  if (trimmed.endsWith('23:59')) {
+    return trimmed.replace('23:59', '22:00:00');
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed} 22:00:00`;
+  }
+  return trimmed;
+}
 
 export const api = {
   // 事项
@@ -151,6 +187,7 @@ export const api = {
     category: string;
     priority: string;
     importance?: number;
+    related_contacts?: string;
   }): Promise<Matter> {
     if (isTauri) {
       return invoke('create_matter', params);
@@ -169,6 +206,7 @@ export const api = {
       updated_at: new Date().toLocaleString(),
       pending_todos_count: 0,
       total_todos_count: 0,
+      related_contacts: params.related_contacts || '',
     };
     mockMatters.unshift(newM);
     return newM;
@@ -222,7 +260,7 @@ export const api = {
     return mockLogs.filter((l) => l.matter_id === matterId);
   },
 
-  async createLog(matterId: string, rawContent: string, sourceApp?: string, sourceWindowTitle?: string): Promise<LogItem> {
+  async createLog(matterId?: string, rawContent: string = '', sourceApp?: string, sourceWindowTitle?: string): Promise<LogItem> {
     if (isTauri) {
       return invoke('create_log', { matterId, rawContent, sourceApp, sourceWindowTitle });
     }
@@ -243,6 +281,56 @@ export const api = {
       return invoke('delete_log', { id });
     }
     mockLogs = mockLogs.filter((l) => l.id !== id);
+  },
+
+  // AI 收件箱
+  async getInboxLogs(): Promise<InboxLogItem[]> {
+    if (isTauri) {
+      return invoke('get_inbox_logs');
+    }
+    return mockLogs.map((l) => {
+      const targetMatter = mockMatters.find((m) => m.id === l.matter_id);
+      const todos = mockTodos.filter((t) => t.log_id === l.id);
+      return {
+        id: l.id,
+        matter_id: l.matter_id,
+        matter_title: targetMatter?.title,
+        raw_content: l.raw_content,
+        source_app: l.source_app,
+        source_window_title: l.source_window_title,
+        created_at: l.created_at,
+        todos,
+      };
+    });
+  },
+
+  async categorizeInboxLog(payload: CategorizePayload): Promise<void> {
+    if (isTauri) {
+      return invoke('categorize_inbox_log', { payload });
+    }
+    const log = mockLogs.find((l) => l.id === payload.log_id);
+    if (log) {
+      if (payload.choice === 'EXISTING' && payload.matter_id) {
+        log.matter_id = payload.matter_id;
+      } else if (payload.choice === 'CREATE_NEW' && payload.new_matter) {
+        const newM = await this.createMatter({
+          title: payload.new_matter.title,
+          category: payload.new_matter.category,
+          priority: payload.new_matter.priority,
+          overview: payload.new_matter.summary,
+          fact_summary: payload.extracted_facts_delta,
+        });
+        log.matter_id = newM.id;
+      }
+      for (const t of payload.new_todos) {
+        await this.createTodo({
+          matterId: log.matter_id!,
+          content: t.content,
+          dueTime: t.due_time,
+          logId: log.id,
+        });
+      }
+    }
   },
 
   // 待办
@@ -271,15 +359,22 @@ export const api = {
     reminderTime?: string;
     logId?: string;
   }): Promise<TodoItem> {
+    const cleanDue = normalizeTodoTime(params.dueTime);
+    const cleanReminder = normalizeTodoTime(params.reminderTime) || cleanDue;
+    const cleanParams = {
+      ...params,
+      dueTime: cleanDue,
+      reminderTime: cleanReminder,
+    };
     if (isTauri) {
-      return invoke('create_todo', params);
+      return invoke('create_todo', cleanParams);
     }
     const todo: TodoItem = {
       id: 't_' + Date.now(),
-      matter_id: params.matterId,
-      content: params.content,
-      due_time: params.dueTime,
-      reminder_time: params.reminderTime || params.dueTime,
+      matter_id: cleanParams.matterId,
+      content: cleanParams.content,
+      due_time: cleanParams.dueTime,
+      reminder_time: cleanParams.reminderTime || cleanParams.dueTime,
       is_reminder_sent: false,
       status: 'pending',
       is_focused: false,
@@ -313,12 +408,39 @@ export const api = {
   },
 
   async updateTodoReminder(id: string, reminderTime?: string): Promise<void> {
+    const cleanReminder = normalizeTodoTime(reminderTime);
     if (isTauri) {
-      return invoke('update_todo_reminder', { id, reminderTime });
+      return invoke('update_todo_reminder', { id, reminderTime: cleanReminder });
     }
     const t = mockTodos.find((item) => item.id === id);
     if (t) {
-      t.reminder_time = reminderTime;
+      t.reminder_time = cleanReminder;
+      t.is_reminder_sent = false;
+    }
+  },
+
+  async updateTodo(params: {
+    id: string;
+    content: string;
+    dueTime?: string;
+    reminderTime?: string;
+  }): Promise<void> {
+    const cleanDue = normalizeTodoTime(params.dueTime);
+    const cleanReminder = normalizeTodoTime(params.reminderTime) || cleanDue;
+    if (isTauri) {
+      return invoke('update_todo', {
+        id: params.id,
+        content: params.content,
+        dueTime: cleanDue,
+        reminderTime: cleanReminder,
+      });
+    }
+    const t = mockTodos.find((item) => item.id === params.id);
+    if (t) {
+      t.content = params.content;
+      t.due_time = cleanDue;
+      t.reminder_time = cleanReminder || cleanDue;
+      t.is_reminder_sent = false;
     }
   },
 
@@ -370,6 +492,13 @@ export const api = {
     };
   },
 
+  async processCapturedContext(captured: CapturedContext): Promise<AIParseResult> {
+    if (isTauri) {
+      return invoke('process_captured_context', { captured });
+    }
+    return this.triggerCaptureAndAnalyze();
+  },
+
   async manualParseText(text: string, sourceApp?: string, sourceWindow?: string): Promise<AIParseResult> {
     if (isTauri) {
       return invoke('manual_parse_text', { text, sourceApp, sourceWindow });
@@ -392,7 +521,48 @@ export const api = {
           logId: log.id,
         });
       }
+      if (payload.todo_updates) {
+        for (const u of payload.todo_updates) {
+          if (u.action === 'CLOSE') {
+            await this.toggleTodoStatus(u.todo_id, true);
+          }
+        }
+      }
     }
+  },
+
+  async undoTodoUpdate(todoId: string, action: string, previousContent?: string, previousDueTime?: string): Promise<void> {
+    if (isTauri) {
+      return invoke('undo_todo_update', { todoId, action, previousContent, previousDueTime });
+    }
+    if (action === 'CLOSE') {
+      const t = mockTodos.find((item) => item.id === todoId);
+      if (t) {
+        t.status = 'pending';
+        t.completed_at = undefined;
+      }
+    } else if (action === 'UPDATE' && previousContent) {
+      const t = mockTodos.find((item) => item.id === todoId);
+      if (t) {
+        t.content = previousContent;
+        t.due_time = previousDueTime;
+      }
+    }
+  },
+
+  async summarizeMatterFacts(matterId: string): Promise<string> {
+    if (isTauri) {
+      return invoke('summarize_matter_facts', { matterId });
+    }
+    const matter = mockMatters.find((m) => m.id === matterId);
+    const logs = mockLogs.filter((l) => l.matter_id === matterId);
+    if (!matter) throw new Error('未找到该事项');
+    if (logs.length === 0) {
+      return matter.fact_summary || '• 暂无相关日志记录，尚未沉淀事实。';
+    }
+    const facts = logs.map((l, i) => `• 事实纪要 ${i + 1}: ${l.raw_content}`).join('\n');
+    matter.fact_summary = facts;
+    return facts;
   },
 
   async hideHudWindow(): Promise<void> {
@@ -401,9 +571,27 @@ export const api = {
     }
   },
 
+  async resizeHudWindow(mode: 'capsule' | 'expanded' | 'reminder'): Promise<void> {
+    if (isTauri) {
+      return invoke('resize_hud_window', { mode });
+    }
+  },
+
   async showMainWindow(): Promise<void> {
     if (isTauri) {
       return invoke('show_main_window');
+    }
+  },
+
+  async enterCompactMode(): Promise<void> {
+    if (isTauri) {
+      return invoke('enter_compact_mode');
+    }
+  },
+
+  async exitCompactMode(): Promise<void> {
+    if (isTauri) {
+      return invoke('exit_compact_mode');
     }
   },
 };

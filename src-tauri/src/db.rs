@@ -1,4 +1,4 @@
-use crate::models::{AppConfig, LogItem, Matter, TodoItem};
+use crate::models::{AppConfig, ExtractedTodo, InboxLogItem, LogItem, Matter, TodoItem};
 use chrono::Local;
 use rusqlite::{params, Connection, Result};
 use std::path::PathBuf;
@@ -35,7 +35,8 @@ impl Database {
                 status TEXT NOT NULL CHECK(status IN ('active', 'pending', 'completed', 'archived')) DEFAULT 'active',
                 is_pinned INTEGER NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                related_contacts TEXT DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_matters_status ON matters(status);
@@ -43,12 +44,12 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS logs (
                 id TEXT PRIMARY KEY,
-                matter_id TEXT NOT NULL,
+                matter_id TEXT,
                 raw_content TEXT NOT NULL,
                 source_app TEXT DEFAULT '',
                 source_window_title TEXT DEFAULT '',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(matter_id) REFERENCES matters(id) ON DELETE CASCADE
+                FOREIGN KEY(matter_id) REFERENCES matters(id) ON DELETE SET NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_logs_matter_id ON logs(matter_id);
@@ -80,6 +81,79 @@ impl Database {
             );
             ",
         )?;
+
+        // 兼容迁移：检测已存在的 logs 表是否含有 matter_id NOT NULL 约束
+        let is_matter_id_not_null: bool = self
+            .conn
+            .query_row(
+                "SELECT \"notnull\" FROM pragma_table_info('logs') WHERE name='matter_id'",
+                [],
+                |row| {
+                    let nn: i32 = row.get(0)?;
+                    Ok(nn == 1)
+                },
+            )
+            .unwrap_or(false);
+
+        if is_matter_id_not_null {
+            let _ = self.conn.execute_batch(
+                "
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE IF NOT EXISTS logs_migration_tmp (
+                    id TEXT PRIMARY KEY,
+                    matter_id TEXT,
+                    raw_content TEXT NOT NULL,
+                    source_app TEXT DEFAULT '',
+                    source_window_title TEXT DEFAULT '',
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(matter_id) REFERENCES matters(id) ON DELETE SET NULL
+                );
+                INSERT OR IGNORE INTO logs_migration_tmp (id, matter_id, raw_content, source_app, source_window_title, created_at)
+                SELECT id, matter_id, raw_content, source_app, source_window_title, created_at FROM logs;
+                DROP TABLE logs;
+                ALTER TABLE logs_migration_tmp RENAME TO logs;
+                CREATE INDEX IF NOT EXISTS idx_logs_matter_id ON logs(matter_id);
+                CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at DESC);
+                PRAGMA foreign_keys = ON;
+                "
+            );
+        }
+
+        // 兼容迁移：检测已存在的 matters 表是否缺少 related_contacts 列
+        let has_related_contacts: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('matters') WHERE name='related_contacts'",
+                [],
+                |row| {
+                    let cnt: i32 = row.get(0)?;
+                    Ok(cnt > 0)
+                },
+            )
+            .unwrap_or(false);
+
+        if !has_related_contacts {
+            let _ = self.conn.execute(
+                "ALTER TABLE matters ADD COLUMN related_contacts TEXT DEFAULT ''",
+                [],
+            );
+        }
+
+        // 兼容迁移：清洗宽泛全天截止时间与深夜 23:59:59 提醒，统一规整为当晚 22:00:00
+        let _ = self.conn.execute_batch(
+            "
+            UPDATE todos SET due_time = replace(due_time, '23:59:59', '22:00:00') WHERE due_time LIKE '%23:59:59';
+            UPDATE todos SET due_time = replace(due_time, '23:59:00', '22:00:00') WHERE due_time LIKE '%23:59:00';
+            UPDATE todos SET due_time = replace(due_time, ' 23:59', ' 22:00:00') WHERE due_time LIKE '% 23:59';
+            UPDATE todos SET due_time = due_time || ' 22:00:00' WHERE length(due_time) = 10 AND due_time LIKE '____-__-__';
+
+            UPDATE todos SET reminder_time = replace(reminder_time, '23:59:59', '22:00:00') WHERE reminder_time LIKE '%23:59:59';
+            UPDATE todos SET reminder_time = replace(reminder_time, '23:59:00', '22:00:00') WHERE reminder_time LIKE '%23:59:00';
+            UPDATE todos SET reminder_time = replace(reminder_time, ' 23:59', ' 22:00:00') WHERE reminder_time LIKE '% 23:59';
+            UPDATE todos SET reminder_time = reminder_time || ' 22:00:00' WHERE length(reminder_time) = 10 AND reminder_time LIKE '____-__-__';
+            ",
+        );
+
         Ok(())
     }
 
@@ -92,7 +166,11 @@ impl Database {
                     (SELECT COUNT(*) FROM todos t WHERE t.matter_id = m.id AND t.status = 'pending') as pending_count,
                     (SELECT COUNT(*) FROM todos t WHERE t.matter_id = m.id) as total_count,
                     (SELECT l.raw_content FROM logs l WHERE l.matter_id = m.id ORDER BY l.created_at DESC LIMIT 1) as latest_log,
-                    (SELECT l.created_at FROM logs l WHERE l.matter_id = m.id ORDER BY l.created_at DESC LIMIT 1) as latest_log_time
+                    (SELECT l.created_at FROM logs l WHERE l.matter_id = m.id ORDER BY l.created_at DESC LIMIT 1) as latest_log_time,
+                    (SELECT t.content FROM todos t WHERE t.matter_id = m.id ORDER BY (CASE WHEN t.status = 'pending' THEN 0 ELSE 1 END), t.created_at DESC LIMIT 1) as latest_todo_content,
+                    (SELECT t.due_time FROM todos t WHERE t.matter_id = m.id ORDER BY (CASE WHEN t.status = 'pending' THEN 0 ELSE 1 END), t.created_at DESC LIMIT 1) as latest_todo_due_time,
+                    (SELECT t.status FROM todos t WHERE t.matter_id = m.id ORDER BY (CASE WHEN t.status = 'pending' THEN 0 ELSE 1 END), t.created_at DESC LIMIT 1) as latest_todo_status,
+                    COALESCE(m.related_contacts, '') as related_contacts
              FROM matters m WHERE 1=1"
         );
 
@@ -142,6 +220,10 @@ impl Database {
                 total_todos_count: row.get(12)?,
                 latest_log_snippet: row.get(13)?,
                 latest_log_time: row.get(14)?,
+                latest_todo_content: row.get(15)?,
+                latest_todo_due_time: row.get(16)?,
+                latest_todo_status: row.get(17)?,
+                related_contacts: row.get(18)?,
             })
         })?;
 
@@ -158,7 +240,11 @@ impl Database {
                           (SELECT COUNT(*) FROM todos t WHERE t.matter_id = m.id AND t.status = 'pending') as pending_count,
                           (SELECT COUNT(*) FROM todos t WHERE t.matter_id = m.id) as total_count,
                           (SELECT l.raw_content FROM logs l WHERE l.matter_id = m.id ORDER BY l.created_at DESC LIMIT 1) as latest_log,
-                          (SELECT l.created_at FROM logs l WHERE l.matter_id = m.id ORDER BY l.created_at DESC LIMIT 1) as latest_log_time
+                          (SELECT l.created_at FROM logs l WHERE l.matter_id = m.id ORDER BY l.created_at DESC LIMIT 1) as latest_log_time,
+                          (SELECT t.content FROM todos t WHERE t.matter_id = m.id ORDER BY (CASE WHEN t.status = 'pending' THEN 0 ELSE 1 END), t.created_at DESC LIMIT 1) as latest_todo_content,
+                          (SELECT t.due_time FROM todos t WHERE t.matter_id = m.id ORDER BY (CASE WHEN t.status = 'pending' THEN 0 ELSE 1 END), t.created_at DESC LIMIT 1) as latest_todo_due_time,
+                          (SELECT t.status FROM todos t WHERE t.matter_id = m.id ORDER BY (CASE WHEN t.status = 'pending' THEN 0 ELSE 1 END), t.created_at DESC LIMIT 1) as latest_todo_status,
+                          COALESCE(m.related_contacts, '') as related_contacts
                    FROM matters m WHERE m.id = ?1";
         let mut stmt = self.conn.prepare(sql)?;
         let mut rows = stmt.query_map([id], |row| {
@@ -179,6 +265,10 @@ impl Database {
                 total_todos_count: row.get(12)?,
                 latest_log_snippet: row.get(13)?,
                 latest_log_time: row.get(14)?,
+                latest_todo_content: row.get(15)?,
+                latest_todo_due_time: row.get(16)?,
+                latest_todo_status: row.get(17)?,
+                related_contacts: row.get(18)?,
             })
         })?;
 
@@ -191,8 +281,8 @@ impl Database {
 
     pub fn create_matter(&self, matter: &Matter) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO matters (id, title, overview, fact_summary, category, priority, importance, status, is_pinned, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO matters (id, title, overview, fact_summary, category, priority, importance, status, is_pinned, created_at, updated_at, related_contacts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 matter.id,
                 matter.title,
@@ -205,6 +295,7 @@ impl Database {
                 if matter.is_pinned { 1 } else { 0 },
                 matter.created_at,
                 matter.updated_at,
+                matter.related_contacts,
             ],
         )?;
         Ok(())
@@ -213,8 +304,8 @@ impl Database {
     pub fn update_matter(&self, matter: &Matter) -> Result<()> {
         let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.conn.execute(
-            "UPDATE matters SET title = ?1, overview = ?2, fact_summary = ?3, category = ?4, priority = ?5, importance = ?6, updated_at = ?7
-             WHERE id = ?8",
+            "UPDATE matters SET title = ?1, overview = ?2, fact_summary = ?3, category = ?4, priority = ?5, importance = ?6, related_contacts = ?7, updated_at = ?8
+             WHERE id = ?9",
             params![
                 matter.title,
                 matter.overview,
@@ -222,6 +313,7 @@ impl Database {
                 matter.category,
                 matter.priority,
                 matter.importance,
+                matter.related_contacts,
                 now,
                 matter.id,
             ],
@@ -301,7 +393,135 @@ impl Database {
                 log.created_at,
             ],
         )?;
-        self.touch_matter_updated(&log.matter_id)?;
+        if let Some(ref mid) = log.matter_id {
+            let _ = self.touch_matter_updated(mid);
+        }
+        Ok(())
+    }
+
+    pub fn get_all_inbox_logs(&self) -> Result<Vec<InboxLogItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT l.id, l.matter_id, m.title, l.raw_content, l.source_app, l.source_window_title, l.created_at
+             FROM logs l
+             LEFT JOIN matters m ON l.matter_id = m.id
+             ORDER BY l.created_at DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let log_id: String = row.get(0)?;
+            let matter_id: Option<String> = row.get(1)?;
+            let matter_title: Option<String> = row.get(2)?;
+            let raw_content: String = row.get(3)?;
+            let source_app: String = row.get(4)?;
+            let source_window_title: String = row.get(5)?;
+            let created_at: String = row.get(6)?;
+
+            Ok(InboxLogItem {
+                id: log_id,
+                matter_id,
+                matter_title,
+                raw_content,
+                source_app,
+                source_window_title,
+                created_at,
+                todos: Vec::new(),
+            })
+        })?;
+
+        let mut items = Vec::new();
+        for r in rows {
+            let mut item = r?;
+            // 查出该日志衍生出的待办列表
+            let mut todo_stmt = self.conn.prepare(
+                "SELECT t.id, t.matter_id, t.log_id, t.content, t.due_time, t.reminder_time, 
+                        t.is_reminder_sent, t.status, t.is_focused, t.created_at, t.completed_at, m.title
+                 FROM todos t
+                 LEFT JOIN matters m ON t.matter_id = m.id
+                 WHERE t.log_id = ?1
+                 ORDER BY t.created_at ASC"
+            )?;
+            let todos = todo_stmt.query_map([&item.id], |trow| {
+                let is_reminder_sent: i32 = trow.get(6)?;
+                let is_focused: i32 = trow.get(8)?;
+                Ok(TodoItem {
+                    id: trow.get(0)?,
+                    matter_id: trow.get(1)?,
+                    log_id: trow.get(2)?,
+                    content: trow.get(3)?,
+                    due_time: trow.get(4)?,
+                    reminder_time: trow.get(5)?,
+                    is_reminder_sent: is_reminder_sent == 1,
+                    status: trow.get(7)?,
+                    is_focused: is_focused == 1,
+                    created_at: trow.get(9)?,
+                    completed_at: trow.get(10)?,
+                    matter_title: trow.get(11)?,
+                })
+            })?;
+            for t in todos {
+                if let Ok(td) = t {
+                    item.todos.push(td);
+                }
+            }
+            items.push(item);
+        }
+
+        Ok(items)
+    }
+
+    pub fn categorize_log(
+        &self,
+        log_id: &str,
+        matter_id: &str,
+        facts_delta: Option<&str>,
+        new_todos: &[ExtractedTodo],
+    ) -> Result<()> {
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        // 1. 将日志绑定到事项
+        self.conn.execute(
+            "UPDATE logs SET matter_id = ?1 WHERE id = ?2",
+            params![matter_id, log_id],
+        )?;
+
+        // 2. 增量事实合并
+        if let Some(delta) = facts_delta {
+            if !delta.trim().is_empty() {
+                if let Ok(Some(mut matter)) = self.get_matter_by_id(matter_id) {
+                    if matter.fact_summary.trim().is_empty() {
+                        matter.fact_summary = delta.to_string();
+                    } else {
+                        matter.fact_summary = format!("{}\n{}", matter.fact_summary, delta);
+                    }
+                    let _ = self.update_matter(&matter);
+                }
+            }
+        }
+
+        // 3. 插入待办
+        for todo in new_todos {
+            if !todo.content.trim().is_empty() {
+                let todo_id = uuid::Uuid::new_v4().to_string();
+                let new_todo = TodoItem {
+                    id: todo_id,
+                    matter_id: matter_id.to_string(),
+                    log_id: Some(log_id.to_string()),
+                    content: todo.content.clone(),
+                    due_time: todo.due_time.clone(),
+                    reminder_time: todo.due_time.clone(),
+                    is_reminder_sent: false,
+                    status: "pending".to_string(),
+                    is_focused: false,
+                    created_at: now.clone(),
+                    completed_at: None,
+                    matter_title: None,
+                };
+                let _ = self.create_todo(&new_todo);
+            }
+        }
+
+        // 4. 更新事项时间
+        let _ = self.touch_matter_updated(matter_id);
+
         Ok(())
     }
 
@@ -391,7 +611,30 @@ impl Database {
         Ok(list)
     }
 
+    /// 对待办截止/提醒时间进行归一化：若时间宽泛到全天或设为深夜 23:59:59，统一规整为当晚 22:00:00
+    pub fn normalize_todo_time(time_opt: Option<String>) -> Option<String> {
+        time_opt.and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if trimmed.ends_with("23:59:59") {
+                Some(trimmed.replace("23:59:59", "22:00:00"))
+            } else if trimmed.ends_with("23:59:00") {
+                Some(trimmed.replace("23:59:00", "22:00:00"))
+            } else if trimmed.ends_with("23:59") {
+                Some(trimmed.replace("23:59", "22:00:00"))
+            } else if trimmed.len() == 10 && trimmed.chars().nth(4) == Some('-') && trimmed.chars().nth(7) == Some('-') {
+                Some(format!("{} 22:00:00", trimmed))
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    }
+
     pub fn create_todo(&self, todo: &TodoItem) -> Result<()> {
+        let clean_due = Self::normalize_todo_time(todo.due_time.clone());
+        let clean_reminder = Self::normalize_todo_time(todo.reminder_time.clone()).or_else(|| clean_due.clone());
         self.conn.execute(
             "INSERT INTO todos (id, matter_id, log_id, content, due_time, reminder_time, is_reminder_sent, status, is_focused, created_at, completed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -400,8 +643,8 @@ impl Database {
                 todo.matter_id,
                 todo.log_id,
                 todo.content,
-                todo.due_time,
-                todo.reminder_time,
+                clean_due,
+                clean_reminder,
                 if todo.is_reminder_sent { 1 } else { 0 },
                 todo.status,
                 if todo.is_focused { 1 } else { 0 },
@@ -440,15 +683,47 @@ impl Database {
     }
 
     pub fn update_todo_reminder(&self, id: &str, reminder_time: Option<String>) -> Result<()> {
+        let clean_reminder = Self::normalize_todo_time(reminder_time);
         self.conn.execute(
             "UPDATE todos SET reminder_time = ?1, is_reminder_sent = 0 WHERE id = ?2",
-            params![reminder_time, id],
+            params![clean_reminder, id],
         )?;
         Ok(())
     }
 
+    pub fn update_todo(
+        &self,
+        id: &str,
+        content: &str,
+        due_time: Option<String>,
+        reminder_time: Option<String>,
+    ) -> Result<()> {
+        let clean_due = Self::normalize_todo_time(due_time);
+        let clean_reminder = Self::normalize_todo_time(reminder_time).or_else(|| clean_due.clone());
+        self.conn.execute(
+            "UPDATE todos SET content = ?1, due_time = ?2, reminder_time = ?3, is_reminder_sent = 0 WHERE id = ?4",
+            params![content, clean_due, clean_reminder, id],
+        )?;
+        if let Ok(matter_id) = self.conn.query_row(
+            "SELECT matter_id FROM todos WHERE id = ?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        ) {
+            let _ = self.touch_matter_updated(&matter_id);
+        }
+        Ok(())
+    }
+
     pub fn delete_todo(&self, id: &str) -> Result<()> {
+        let matter_id: Option<String> = self.conn.query_row(
+            "SELECT matter_id FROM todos WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).ok();
         self.conn.execute("DELETE FROM todos WHERE id = ?1", params![id])?;
+        if let Some(mid) = matter_id {
+            let _ = self.touch_matter_updated(&mid);
+        }
         Ok(())
     }
 
@@ -522,6 +797,8 @@ impl Database {
                         config.auto_archive_confidence = c;
                     }
                 }
+                "user_profile" => config.user_profile = v,
+                "theme" => config.theme = v,
                 _ => {}
             }
         }
@@ -536,6 +813,8 @@ impl Database {
             ("capture_shortcut", config.capture_shortcut.clone()),
             ("main_window_shortcut", config.main_window_shortcut.clone()),
             ("auto_archive_confidence", config.auto_archive_confidence.to_string()),
+            ("user_profile", config.user_profile.clone()),
+            ("theme", config.theme.clone()),
         ];
 
         for (k, v) in pairs {
@@ -580,6 +859,10 @@ mod tests {
             total_todos_count: 0,
             latest_log_snippet: None,
             latest_log_time: None,
+            latest_todo_content: None,
+            latest_todo_due_time: None,
+            latest_todo_status: None,
+            related_contacts: "".to_string(),
         };
 
         // 创建
@@ -626,13 +909,17 @@ mod tests {
             total_todos_count: 0,
             latest_log_snippet: None,
             latest_log_time: None,
+            latest_todo_content: None,
+            latest_todo_due_time: None,
+            latest_todo_status: None,
+            related_contacts: "".to_string(),
         };
         db.create_matter(&matter).unwrap();
 
         // 插入日志
         let log = LogItem {
             id: "l_test_1".to_string(),
-            matter_id: "m_test_2".to_string(),
+            matter_id: Some("m_test_2".to_string()),
             raw_content: "收到微信通知：明天下午准备去超市采购。".to_string(),
             source_app: "微信".to_string(),
             source_window_title: "家庭群".to_string(),
@@ -671,6 +958,40 @@ mod tests {
         let todos_after = db.get_todos_by_matter("m_test_2").unwrap();
         assert_eq!(todos_after[0].status, "completed");
         assert!(todos_after[0].completed_at.is_some());
+
+        // 测试收件箱查询
+        let inbox = db.get_all_inbox_logs().unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].matter_title.as_deref(), Some("日志与待办测试事项"));
+        assert_eq!(inbox[0].todos.len(), 1);
+
+        // 测试未归集日志并手动归集
+        let uncat_log = LogItem {
+            id: "l_uncat_1".to_string(),
+            matter_id: None,
+            raw_content: "客户要求下月增加报表导出功能".to_string(),
+            source_app: "钉钉".to_string(),
+            source_window_title: "需求讨论".to_string(),
+            created_at: "2026-09-21 00:03:00".to_string(),
+        };
+        db.create_log(&uncat_log).unwrap();
+        let inbox_before = db.get_all_inbox_logs().unwrap();
+        assert_eq!(inbox_before.len(), 2);
+        assert!(inbox_before[0].matter_id.is_none());
+
+        db.categorize_log(
+            "l_uncat_1",
+            "m_test_2",
+            Some("• 客户要求增加报表导出"),
+            &[ExtractedTodo {
+                content: "评估报表导出工作量".to_string(),
+                due_time: None,
+            }],
+        ).unwrap();
+
+        let inbox_after = db.get_all_inbox_logs().unwrap();
+        assert_eq!(inbox_after[0].matter_id.as_deref(), Some("m_test_2"));
+        assert_eq!(inbox_after[0].todos.len(), 1);
     }
 
     #[test]
@@ -683,6 +1004,8 @@ mod tests {
             capture_shortcut: "Alt+X".to_string(),
             main_window_shortcut: "Alt+Space".to_string(),
             auto_archive_confidence: 0.85,
+            user_profile: "测试个人情况".to_string(),
+            theme: "dark".to_string(),
         };
 
         db.save_config(&custom_config).unwrap();
@@ -693,5 +1016,155 @@ mod tests {
         assert_eq!(loaded.model_name, "deepseek-chat");
         assert_eq!(loaded.capture_shortcut, "Alt+X");
         assert_eq!(loaded.auto_archive_confidence, 0.85);
+        assert_eq!(loaded.user_profile, "测试个人情况");
+        assert_eq!(loaded.theme, "dark");
+    }
+
+    #[test]
+    fn test_todo_close_and_undo_lifecycle() {
+        let db = setup_test_db();
+        let matter = Matter {
+            id: "m_lang_11".to_string(),
+            title: "11国小语种质检与交付".to_string(),
+            overview: "多语种数据质检项目".to_string(),
+            fact_summary: "".to_string(),
+            category: "work".to_string(),
+            priority: "high".to_string(),
+            importance: 3,
+            status: "active".to_string(),
+            is_pinned: false,
+            created_at: "2026-09-21 00:00:00".to_string(),
+            updated_at: "2026-09-21 00:00:00".to_string(),
+            pending_todos_count: 0,
+            total_todos_count: 0,
+            latest_log_snippet: None,
+            latest_log_time: None,
+            latest_todo_content: None,
+            latest_todo_due_time: None,
+            latest_todo_status: None,
+            related_contacts: "".to_string(),
+        };
+        db.create_matter(&matter).unwrap();
+
+        // 创建原待办：南非荷兰语我只能自己上了，预计8点左右开始，10点结束
+        let todo = TodoItem {
+            id: "t_afrikaans".to_string(),
+            matter_id: "m_lang_11".to_string(),
+            log_id: None,
+            content: "南非荷兰语我只能自己上了，预计8点左右开始，10点结束".to_string(),
+            due_time: Some("2026-09-21 22:00:00".to_string()),
+            reminder_time: None,
+            is_reminder_sent: false,
+            status: "pending".to_string(),
+            is_focused: false,
+            created_at: "2026-09-21 18:26:00".to_string(),
+            completed_at: None,
+            matter_title: Some(matter.title.clone()),
+        };
+        db.create_todo(&todo).unwrap();
+
+        // 验证待办初始为 pending
+        let todos = db.get_todos_by_matter("m_lang_11").unwrap();
+        assert_eq!(todos[0].status, "pending");
+
+        // 测试本地规则引擎识别：21:22 南非荷兰语已返修提交
+        let matters_ctx = vec![crate::models::MatterContextWithTodos {
+            matter: matter.clone(),
+            pending_todos: vec![todos[0].clone()],
+        }];
+        let parse_res = crate::services::ai_service::AIService::local_fallback_parser(
+            &matters_ctx,
+            "21:22 南非荷兰语已返修提交",
+            "微信",
+            "11国小语种质检与交付",
+        );
+
+        // 应识别出关闭待办建议
+        assert!(!parse_res.todo_updates.is_empty(), "本地规则引擎应识别到待办可关闭");
+        assert_eq!(parse_res.todo_updates[0].todo_id, "t_afrikaans");
+        assert_eq!(parse_res.todo_updates[0].action, "CLOSE");
+
+        // 执行关闭
+        db.toggle_todo_status("t_afrikaans", true).unwrap();
+        let todos_after_close = db.get_todos_by_matter("m_lang_11").unwrap();
+        assert_eq!(todos_after_close[0].status, "completed");
+        assert!(todos_after_close[0].completed_at.is_some());
+
+        // 执行撤销：恢复为 pending
+        db.toggle_todo_status("t_afrikaans", false).unwrap();
+        let todos_after_undo = db.get_todos_by_matter("m_lang_11").unwrap();
+        assert_eq!(todos_after_undo[0].status, "pending");
+        assert!(todos_after_undo[0].completed_at.is_none());
+    }
+
+    #[test]
+    fn test_todo_due_time_normalization() {
+        // 1. 测试 normalize_todo_time 函数
+        assert_eq!(
+            Database::normalize_todo_time(Some("2026-09-22 23:59:59".to_string())),
+            Some("2026-09-22 22:00:00".to_string())
+        );
+        assert_eq!(
+            Database::normalize_todo_time(Some("2026-09-22 23:59:00".to_string())),
+            Some("2026-09-22 22:00:00".to_string())
+        );
+        assert_eq!(
+            Database::normalize_todo_time(Some("2026-09-22 23:59".to_string())),
+            Some("2026-09-22 22:00:00".to_string())
+        );
+        assert_eq!(
+            Database::normalize_todo_time(Some("2026-09-22".to_string())),
+            Some("2026-09-22 22:00:00".to_string())
+        );
+        // 精准时间保持原样
+        assert_eq!(
+            Database::normalize_todo_time(Some("2026-09-22 15:30:00".to_string())),
+            Some("2026-09-22 15:30:00".to_string())
+        );
+
+        // 2. 测试写入数据库时自动校正
+        let db = setup_test_db();
+        let matter = Matter {
+            id: "m_norm".to_string(),
+            title: "大学城标注基地".to_string(),
+            overview: "基地建设".to_string(),
+            fact_summary: "".to_string(),
+            category: "work".to_string(),
+            priority: "high".to_string(),
+            importance: 3,
+            status: "active".to_string(),
+            is_pinned: false,
+            created_at: "2026-09-21 00:00:00".to_string(),
+            updated_at: "2026-09-21 00:00:00".to_string(),
+            pending_todos_count: 0,
+            total_todos_count: 0,
+            latest_log_snippet: None,
+            latest_log_time: None,
+            latest_todo_content: None,
+            latest_todo_due_time: None,
+            latest_todo_status: None,
+            related_contacts: "".to_string(),
+        };
+        db.create_matter(&matter).unwrap();
+
+        let todo = TodoItem {
+            id: "t_wide_due".to_string(),
+            matter_id: "m_norm".to_string(),
+            log_id: None,
+            content: "在离开广州前与丁至安排一次联合基地方案讨论（这两天完成）".to_string(),
+            due_time: Some("2026-09-22 23:59:59".to_string()),
+            reminder_time: Some("2026-09-22 23:59:59".to_string()),
+            is_reminder_sent: false,
+            status: "pending".to_string(),
+            is_focused: false,
+            created_at: "2026-09-21 21:00:00".to_string(),
+            completed_at: None,
+            matter_title: None,
+        };
+        db.create_todo(&todo).unwrap();
+
+        let todos = db.get_todos_by_matter("m_norm").unwrap();
+        assert_eq!(todos[0].due_time.as_deref(), Some("2026-09-22 22:00:00"));
+        assert_eq!(todos[0].reminder_time.as_deref(), Some("2026-09-22 22:00:00"));
     }
 }

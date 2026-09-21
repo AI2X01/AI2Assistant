@@ -13,7 +13,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI2Assistant 智能事项与待办助手",
+        "title": "AI助手 - 个人事项智能整理小助手",
+        "url": "index.html",
         "width": 1080,
         "height": 720,
         "minWidth": 800,
@@ -25,14 +26,15 @@
       {
         "label": "hud",
         "title": "AI2Assistant HUD",
-        "width": 380,
-        "height": 220,
+        "url": "index.html",
+        "width": 360,
+        "height": 76,
         "decorations": false,
         "alwaysOnTop": true,
         "transparent": true,
         "skipTaskbar": true,
         "visible": false,
-        "shadow": true
+        "shadow": false
       }
     ],
     "security": {

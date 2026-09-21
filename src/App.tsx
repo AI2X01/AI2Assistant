@@ -3,29 +3,65 @@ import { Navbar } from './components/Navbar';
 import { MatterCard } from './components/MatterCard';
 import { MatterDrawer } from './components/MatterDrawer';
 import { TodoBoard } from './components/TodoBoard';
+import { InboxBoard } from './components/InboxBoard';
 import { NewMatterModal } from './components/NewMatterModal';
 import { SettingsModal } from './components/SettingsModal';
 import { HUDWindow } from './components/HUDWindow';
+import { CompactTodoWidget } from './components/CompactTodoWidget';
 import { Matter } from './types';
 import { api } from './services/api';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { listen } from '@tauri-apps/api/event';
 import { Filter, ArrowUpDown, Inbox, Sparkles } from 'lucide-react';
+import { initThemeSystem, setThemeMode } from './services/theme';
+import { ThemeMode } from './types';
+
+// 同步获取当前窗口 label，避免初始状态闪变
+function getInitialWindowLabel(): string {
+  try {
+    // @ts-ignore
+    const label = window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label;
+    if (label) return label;
+    const appWin = getCurrentWebviewWindow();
+    if (appWin && appWin.label) return appWin.label;
+  } catch {}
+  return 'main';
+}
 
 export function App() {
-  const [windowLabel, setWindowLabel] = useState<string>('main');
+  const [windowLabel, setWindowLabel] = useState<string>(getInitialWindowLabel);
 
-  // 检测窗口 Label
   useEffect(() => {
+    // 启动全局主题系统（系统深色偏好监听 & 多窗口广播响应）
+    initThemeSystem();
+
+    // 从持久化配置中拉取并对齐主题偏好
+    api.getAppConfig().then((cfg) => {
+      if (cfg?.theme) {
+        setThemeMode(cfg.theme as ThemeMode, false);
+      }
+    }).catch(() => {});
+
     try {
       const appWin = getCurrentWebviewWindow();
       if (appWin && appWin.label) {
         setWindowLabel(appWin.label);
       }
     } catch {
-      // 浏览器环境默认 main
       setWindowLabel('main');
     }
   }, []);
+
+  // 动态同步 body 与 #root 的透明类
+  useEffect(() => {
+    if (windowLabel === 'hud') {
+      document.body.classList.add('is-hud');
+      document.getElementById('root')?.classList.add('is-hud');
+    } else {
+      document.body.classList.remove('is-hud');
+      document.getElementById('root')?.classList.remove('is-hud');
+    }
+  }, [windowLabel]);
 
   // 如果是 HUD 右下角微窗，直接渲染 HUD 组件
   if (windowLabel === 'hud') {
@@ -36,9 +72,10 @@ export function App() {
 }
 
 function MainWindow() {
-  const [currentTab, setCurrentTab] = useState<'matters' | 'todos'>('matters');
+  const [currentTab, setCurrentTab] = useState<'matters' | 'todos' | 'inbox'>('matters');
   const [matters, setMatters] = useState<Matter[]>([]);
   const [selectedMatter, setSelectedMatter] = useState<Matter | null>(null);
+  const [uncategorizedCount, setUncategorizedCount] = useState<number>(0);
 
   // 过滤与排序
   const [statusFilter, setStatusFilter] = useState<string>('active');
@@ -49,12 +86,43 @@ function MainWindow() {
   // 弹窗状态
   const [isNewMatterOpen, setIsNewMatterOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isCompactMode, setIsCompactMode] = useState(false);
+
+  const handleEnterCompact = async () => {
+    try {
+      await api.enterCompactMode();
+      setIsCompactMode(true);
+    } catch (e) {
+      console.error('进入缩略模式失败', e);
+    }
+  };
+
+  const handleExitCompact = async () => {
+    try {
+      await api.exitCompactMode();
+      setIsCompactMode(false);
+    } catch (e) {
+      console.error('退出缩略模式失败', e);
+    }
+  };
 
   useEffect(() => {
     loadMatters();
+    loadUncategorizedCount();
   }, [statusFilter, categoryFilter, sortBy]);
+
+  // 监听后端发起的实时数据更新广播
+  useEffect(() => {
+    const unlisten = listen('refresh-data', () => {
+      loadMatters();
+      loadUncategorizedCount();
+      showToast('✓ AI 划选捕获已同步更新！');
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   const loadMatters = async () => {
     try {
@@ -62,6 +130,16 @@ function MainWindow() {
       setMatters(list);
     } catch (e) {
       console.error('加载事项列表失败', e);
+    }
+  };
+
+  const loadUncategorizedCount = async () => {
+    try {
+      const inboxList = await api.getInboxLogs();
+      const count = inboxList.filter((l) => !l.matter_id).length;
+      setUncategorizedCount(count);
+    } catch (e) {
+      console.warn('获取未归集数失败', e);
     }
   };
 
@@ -77,24 +155,7 @@ function MainWindow() {
     e.stopPropagation();
     await api.updateMatterStatus(id, status);
     loadMatters();
-  };
-
-  // 模拟划选触发
-  const handleTriggerMockCapture = async () => {
-    setIsCapturing(true);
-    try {
-      const res = await api.triggerCaptureAndAnalyze();
-      if (res.action === 'MATCH_EXISTING') {
-        showToast(`✓ 已自动沉淀至【${res.matched_matter_title || '关联事项'}】，生成待办项！`);
-      } else {
-        showToast(`AI 意图分析完成: ${res.action}`);
-      }
-      loadMatters();
-    } catch (e: any) {
-      showToast(`划选捕获提示: ${e.message || String(e)}`);
-    } finally {
-      setIsCapturing(false);
-    }
+    showToast(`事项状态已更新`);
   };
 
   const showToast = (msg: string) => {
@@ -102,30 +163,35 @@ function MainWindow() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // 搜索过滤
-  const filteredMatters = matters.filter((m) => {
+  // 搜索过滤（防空安全保护）
+  const filteredMatters = (matters || []).filter((m) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
-    return (
-      m.title.toLowerCase().includes(q) ||
-      m.overview.toLowerCase().includes(q) ||
-      m.fact_summary.toLowerCase().includes(q) ||
-      (m.latest_log_snippet && m.latest_log_snippet.toLowerCase().includes(q))
-    );
+    const title = (m.title || '').toLowerCase();
+    const overview = (m.overview || '').toLowerCase();
+    const factSummary = (m.fact_summary || '').toLowerCase();
+    const snippet = (m.latest_log_snippet || '').toLowerCase();
+    const todoContent = (m.latest_todo_content || '').toLowerCase();
+    return title.includes(q) || overview.includes(q) || factSummary.includes(q) || snippet.includes(q) || todoContent.includes(q);
   });
 
+  // 如果处于桌面右上角常驻缩略模式，直接渲染待办小微窗
+  if (isCompactMode) {
+    return <CompactTodoWidget onExpand={handleExitCompact} />;
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans select-none">
+    <div className="h-screen h-[100dvh] max-h-screen w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans select-none overflow-hidden">
       {/* 顶部全局导航栏 */}
       <Navbar
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
+        uncategorizedCount={uncategorizedCount}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         onOpenNewMatter={() => setIsNewMatterOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onTriggerMockCapture={handleTriggerMockCapture}
-        isCapturing={isCapturing}
+        onEnterCompactMode={handleEnterCompact}
       />
 
       {/* 轻量全局 Toast */}
@@ -136,10 +202,10 @@ function MainWindow() {
         </div>
       )}
 
-      {/* 主体视图 */}
-      <main className="flex-1 overflow-y-auto">
-        {currentTab === 'matters' ? (
-          <div className="max-w-7xl mx-auto p-6 space-y-6">
+      {/* 主体视图：严格限定高度，垂直滚动平滑响应鼠标滚轮 */}
+      <main className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden overscroll-contain">
+        {currentTab === 'matters' && (
+          <div className="max-w-7xl mx-auto p-6 space-y-6 pb-16">
             {/* 过滤器与排序工具栏 */}
             <div className="flex flex-wrap items-center justify-between gap-4 bg-white dark:bg-slate-900/60 p-3.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs">
               {/* 状态过滤 */}
@@ -209,6 +275,7 @@ function MainWindow() {
                     onSelect={(m) => setSelectedMatter(m)}
                     onTogglePin={handleTogglePin}
                     onUpdateStatus={handleUpdateStatus}
+                    onRefresh={loadMatters}
                   />
                 ))}
               </div>
@@ -224,8 +291,14 @@ function MainWindow() {
               </div>
             )}
           </div>
-        ) : (
+        )}
+
+        {currentTab === 'todos' && (
           <TodoBoard onSelectMatter={(m) => setSelectedMatter(m)} />
+        )}
+
+        {currentTab === 'inbox' && (
+          <InboxBoard onSelectMatter={(m) => setSelectedMatter(m)} />
         )}
       </main>
 

@@ -1,0 +1,12 @@
+D:\code\AI2Assistant\src-tauri\target_check\debug\deps\writeable-27f0cdde8b4efb25.d: C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\lib.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\cmp.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\concat.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\impls.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\ops.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\parts_write_adapter.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\replace.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\try_writeable.rs
+
+D:\code\AI2Assistant\src-tauri\target_check\debug\deps\libwriteable-27f0cdde8b4efb25.rmeta: C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\lib.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\cmp.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\concat.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\impls.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\ops.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\parts_write_adapter.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\replace.rs C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\try_writeable.rs
+
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\lib.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\cmp.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\concat.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\impls.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\ops.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\parts_write_adapter.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\replace.rs:
+C:\Users\liang\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\writeable-0.6.4\src\try_writeable.rs:

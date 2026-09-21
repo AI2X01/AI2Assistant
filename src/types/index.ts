@@ -2,6 +2,7 @@ export type CategoryType = 'work' | 'life';
 export type PriorityType = 'high' | 'medium' | 'low';
 export type StatusType = 'active' | 'pending' | 'completed' | 'archived';
 export type TodoStatusType = 'pending' | 'completed';
+export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface Matter {
   id: string;
@@ -19,15 +20,30 @@ export interface Matter {
   total_todos_count?: number;
   latest_log_snippet?: string;
   latest_log_time?: string;
+  latest_todo_content?: string;
+  latest_todo_due_time?: string;
+  latest_todo_status?: TodoStatusType;
+  related_contacts?: string;
 }
 
 export interface LogItem {
   id: string;
-  matter_id: string;
+  matter_id?: string;
   raw_content: string;
   source_app: string;
   source_window_title: string;
   created_at: string;
+}
+
+export interface InboxLogItem {
+  id: string;
+  matter_id?: string;
+  matter_title?: string;
+  raw_content: string;
+  source_app: string;
+  source_window_title: string;
+  created_at: string;
+  todos: TodoItem[];
 }
 
 export interface TodoItem {
@@ -52,6 +68,14 @@ export interface AppConfig {
   capture_shortcut: string;
   main_window_shortcut: string;
   auto_archive_confidence: number;
+  user_profile?: string;
+  theme?: ThemeMode;
+}
+
+export interface CapturedContext {
+  text: string;
+  source_app: string;
+  source_window: string;
 }
 
 export interface ExtractedTodo {
@@ -64,12 +88,22 @@ export interface SuggestedMatter {
   category: CategoryType;
   priority: PriorityType;
   summary: string;
+  related_contacts?: string;
 }
 
 export interface CandidateMatter {
   id: string;
   title: string;
   confidence: number;
+}
+
+export interface TodoUpdateSuggestion {
+  todo_id: string;
+  original_content: string;
+  action: 'CLOSE' | 'UPDATE';
+  reason: string;
+  updated_content?: string;
+  updated_due_time?: string;
 }
 
 export interface AIParseResult {
@@ -81,9 +115,11 @@ export interface AIParseResult {
   suggested_new_matter?: SuggestedMatter;
   extracted_facts_delta?: string;
   extracted_todos: ExtractedTodo[];
+  todo_updates?: TodoUpdateSuggestion[];
   raw_snippet: string;
   source_app: string;
   source_window: string;
+  log_id?: string;
 }
 
 export interface ConfirmRoutePayload {
@@ -95,4 +131,16 @@ export interface ConfirmRoutePayload {
   source_window: string;
   extracted_facts_delta?: string;
   extracted_todos: ExtractedTodo[];
+  todo_updates?: TodoUpdateSuggestion[];
+  log_id?: string;
+}
+
+export interface CategorizePayload {
+  log_id: string;
+  choice: 'EXISTING' | 'CREATE_NEW';
+  matter_id?: string;
+  new_matter?: SuggestedMatter;
+  extracted_facts_delta?: string;
+  new_todos: ExtractedTodo[];
+  todo_updates?: TodoUpdateSuggestion[];
 }

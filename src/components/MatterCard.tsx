@@ -1,7 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Pin,
-  Clock,
   CheckCircle2,
   ChevronRight,
   Briefcase,
@@ -9,14 +8,19 @@ import {
   Archive,
   RotateCcw,
   Star,
+  Edit3,
+  CheckSquare,
+  ListTodo,
 } from 'lucide-react';
 import { Matter } from '../types';
+import { EditMatterModal } from './EditMatterModal';
 
 interface MatterCardProps {
   matter: Matter;
   onSelect: (matter: Matter) => void;
   onTogglePin: (id: string, e: React.MouseEvent) => void;
   onUpdateStatus: (id: string, status: string, e: React.MouseEvent) => void;
+  onRefresh?: () => void;
 }
 
 export const MatterCard: React.FC<MatterCardProps> = ({
@@ -24,7 +28,9 @@ export const MatterCard: React.FC<MatterCardProps> = ({
   onSelect,
   onTogglePin,
   onUpdateStatus,
+  onRefresh,
 }) => {
+  const [isEditOpen, setIsEditOpen] = useState(false);
   const isWork = matter.category === 'work';
   const isArchived = matter.status === 'archived';
   const isCompleted = matter.status === 'completed';
@@ -79,41 +85,101 @@ export const MatterCard: React.FC<MatterCardProps> = ({
             </div>
           </div>
 
-          {/* 置顶按钮 */}
-          <button
-            onClick={(e) => onTogglePin(matter.id, e)}
-            className={`p-1.5 rounded-lg transition-all ${
-              matter.is_pinned
-                ? 'text-sky-600 dark:text-sky-400 bg-sky-100 dark:bg-sky-900/60'
-                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 opacity-0 group-hover:opacity-100'
-            }`}
-            title={matter.is_pinned ? '取消置顶' : '置顶事项'}
-          >
-            <Pin className={`w-3.5 h-3.5 ${matter.is_pinned ? 'fill-current' : ''}`} />
-          </button>
+          {/* 右上角操作区：编辑 & 置顶 */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsEditOpen(true);
+              }}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-slate-100 dark:hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-all"
+              title="编辑事项信息"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+            </button>
+
+            {/* 置顶按钮 */}
+            <button
+              onClick={(e) => onTogglePin(matter.id, e)}
+              className={`p-1.5 rounded-lg transition-all ${
+                matter.is_pinned
+                  ? 'text-sky-600 dark:text-sky-400 bg-sky-100 dark:bg-sky-900/60'
+                  : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 opacity-0 group-hover:opacity-100'
+              }`}
+              title={matter.is_pinned ? '取消置顶' : '置顶事项'}
+            >
+              <Pin className={`w-3.5 h-3.5 ${matter.is_pinned ? 'fill-current' : ''}`} />
+            </button>
+          </div>
         </div>
 
         {/* 事项标题 */}
-        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 tracking-tight leading-snug line-clamp-2 mb-2 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
+        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 tracking-tight leading-snug line-clamp-2 mb-1.5 group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
           {matter.title}
         </h3>
 
-        {/* 核心事实摘要预览 */}
+        {/* 关联人/群胶囊 */}
+        {matter.related_contacts && matter.related_contacts.trim() && (
+          <div className="flex items-center gap-1 mb-2 flex-wrap">
+            {matter.related_contacts
+              .split(/[,，、;； ]+/)
+              .filter(Boolean)
+              .slice(0, 3)
+              .map((c, i) => (
+                <span
+                  key={i}
+                  className="px-1.5 py-0.5 text-[10px] font-medium rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/40"
+                >
+                  @{c}
+                </span>
+              ))}
+            {matter.related_contacts.split(/[,，、;； ]+/).filter(Boolean).length > 3 && (
+              <span className="text-[10px] text-slate-400">
+                +{matter.related_contacts.split(/[,，、;； ]+/).filter(Boolean).length - 3}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* 1. 核心事实沉淀 */}
         {matter.fact_summary ? (
-          <div className="mb-3 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800/80 text-slate-600 dark:text-slate-300 text-xs leading-relaxed line-clamp-3 whitespace-pre-line font-normal">
+          <div className="mb-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800/80 text-slate-600 dark:text-slate-300 text-xs leading-relaxed line-clamp-3 whitespace-pre-line font-normal">
             {matter.fact_summary}
           </div>
         ) : matter.overview ? (
-          <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3 leading-relaxed">
+          <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-2.5 leading-relaxed">
             {matter.overview}
           </p>
-        ) : null}
+        ) : (
+          <div className="text-[11px] text-slate-400 italic mb-2.5 p-2 rounded-lg bg-slate-50/50 dark:bg-slate-800/20 border border-dashed border-slate-100 dark:border-slate-800/60">
+            • 暂无核心事实沉淀
+          </div>
+        )}
 
-        {/* 最新一条碎片日志 */}
-        {matter.latest_log_snippet && (
-          <div className="flex items-start gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 mb-3 bg-slate-100/70 dark:bg-slate-800/40 p-2 rounded-lg">
-            <Clock className="w-3.5 h-3.5 text-slate-400 mt-0.5 shrink-0" />
-            <span className="line-clamp-1 italic">"{matter.latest_log_snippet}"</span>
+        {/* 2. 最新一条待办（取代原最新日志） */}
+        {matter.latest_todo_content ? (
+          <div className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-200 mb-3 bg-sky-50/70 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/40 p-2.5 rounded-xl">
+            <CheckSquare className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${matter.latest_todo_status === 'completed' ? 'text-emerald-500' : 'text-sky-600 dark:text-sky-400'}`} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-1 mb-0.5">
+                <span className="text-[10px] font-semibold text-sky-600 dark:text-sky-400">
+                  {matter.latest_todo_status === 'completed' ? '最近完成' : '最新待办'}
+                </span>
+                {matter.latest_todo_due_time && (
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {matter.latest_todo_due_time.slice(5, 16)}
+                  </span>
+                )}
+              </div>
+              <p className={`line-clamp-1 font-medium ${matter.latest_todo_status === 'completed' ? 'line-through text-slate-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                {matter.latest_todo_content}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mb-3 bg-slate-50/80 dark:bg-slate-800/30 p-2 rounded-lg border border-dashed border-slate-200/80 dark:border-slate-800">
+            <ListTodo className="w-3.5 h-3.5 text-slate-300 dark:text-slate-600 shrink-0" />
+            <span className="italic">暂无待办事项</span>
           </div>
         )}
       </div>
@@ -165,6 +231,16 @@ export const MatterCard: React.FC<MatterCardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 卡片内嵌编辑弹窗 */}
+      <EditMatterModal
+        matter={matter}
+        isOpen={isEditOpen}
+        onClose={() => setIsEditOpen(false)}
+        onSuccess={() => {
+          if (onRefresh) onRefresh();
+        }}
+      />
     </div>
   );
 };

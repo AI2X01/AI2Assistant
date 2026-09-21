@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Clock,
@@ -6,12 +6,15 @@ import {
   CheckCircle2,
   Circle,
   Send,
-  ArrowRight,
   Bookmark,
   Calendar,
+  Edit3,
+  Trash2,
 } from 'lucide-react';
 import { Matter, LogItem, TodoItem } from '../types';
-import { api } from '../services/api';
+import { api, normalizeTodoTime } from '../services/api';
+import { EditMatterModal } from './EditMatterModal';
+import { listen } from '@tauri-apps/api/event';
 
 interface MatterDrawerProps {
   matter: Matter | null;
@@ -29,7 +32,7 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
   const [currentMatter, setCurrentMatter] = useState<Matter>(matter);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
-  const [activeTab, setActiveTab] = useState<'timeline' | 'todos' | 'facts'>('timeline');
+  const [activeTab, setActiveTab] = useState<'todos' | 'facts' | 'timeline'>('todos');
 
   // 新增输入态
   const [newLogContent, setNewLogContent] = useState('');
@@ -38,11 +41,22 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
   const [factDraft, setFactDraft] = useState(matter.fact_summary || '');
   const [isEditingFact, setIsEditingFact] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [extractingLogId, setExtractingLogId] = useState<string | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   useEffect(() => {
     setCurrentMatter(matter);
     setFactDraft(matter.fact_summary || '');
     loadDetails(matter.id);
+  }, [matter.id]);
+
+  useEffect(() => {
+    const unlisten = listen('refresh-data', () => {
+      loadDetails(matter.id);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, [matter.id]);
 
   const loadDetails = async (id: string) => {
@@ -97,21 +111,134 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
     onRefreshMatters();
   };
 
+  // 待办编辑态
+  const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
+  const [editTodoContent, setEditTodoContent] = useState('');
+  const [editTodoDue, setEditTodoDue] = useState('');
+
   // 待办聚焦
   const handleToggleFocus = async (todo: TodoItem) => {
     await api.toggleTodoFocus(todo.id);
     await loadDetails(currentMatter.id);
   };
 
-  // 日志一键转待办
-  const handleLogToTodo = async (log: LogItem) => {
-    await api.createTodo({
-      matterId: currentMatter.id,
-      content: log.raw_content,
-      logId: log.id,
-    });
-    await loadDetails(currentMatter.id);
-    onRefreshMatters();
+  // 开始编辑待办
+  const handleStartEditTodo = (todo: TodoItem) => {
+    setEditingTodoId(todo.id);
+    setEditTodoContent(todo.content);
+    const normalizedDue = normalizeTodoTime(todo.due_time);
+    if (normalizedDue) {
+      setEditTodoDue(normalizedDue.replace(' ', 'T').slice(0, 16));
+    } else {
+      setEditTodoDue('');
+    }
+  };
+
+  // 取消编辑待办
+  const handleCancelEditTodo = () => {
+    setEditingTodoId(null);
+    setEditTodoContent('');
+    setEditTodoDue('');
+  };
+
+  // 保存待办编辑
+  const handleSaveEditTodo = async (id: string) => {
+    if (!editTodoContent.trim()) return;
+    try {
+      const dueTime = editTodoDue
+        ? editTodoDue.replace('T', ' ') + (editTodoDue.length === 16 ? ':00' : '')
+        : undefined;
+      await api.updateTodo({
+        id,
+        content: editTodoContent.trim(),
+        dueTime,
+      });
+      setEditingTodoId(null);
+      await loadDetails(currentMatter.id);
+      onRefreshMatters();
+    } catch (e) {
+      console.error('更新待办失败', e);
+    }
+  };
+
+  // 删除待办
+  const handleDeleteTodo = async (id: string) => {
+    try {
+      await api.deleteTodo(id);
+      if (editingTodoId === id) {
+        handleCancelEditTodo();
+      }
+      await loadDetails(currentMatter.id);
+      onRefreshMatters();
+    } catch (e) {
+      console.error('删除待办失败', e);
+    }
+  };
+
+  // 从日志中智能抽取出待办与事实
+  const handleExtractTodosAndFacts = async (log: LogItem) => {
+    setExtractingLogId(log.id);
+    try {
+      // 1. 调用 AI 语义分析抽取具体待办与事实增量
+      const parsed = await api.manualParseText(
+        log.raw_content,
+        log.source_app,
+        log.source_window_title
+      );
+
+      // 2. 录入抽取出的待办
+      if (parsed.extracted_todos && parsed.extracted_todos.length > 0) {
+        for (const todo of parsed.extracted_todos) {
+          await api.createTodo({
+            matterId: currentMatter.id,
+            content: todo.content,
+            dueTime: todo.due_time,
+            logId: log.id,
+          });
+        }
+      } else {
+        // 规则兜底：若未匹配到特定行动项，将本条日志作为待办保留
+        await api.createTodo({
+          matterId: currentMatter.id,
+          content: log.raw_content,
+          logId: log.id,
+        });
+      }
+
+      // 3. 若抽取出事实增量，自动融入当前事项的核心事实摘要中
+      if (parsed.extracted_facts_delta && parsed.extracted_facts_delta.trim()) {
+        const delta = parsed.extracted_facts_delta.trim();
+        const existingSummary = currentMatter.fact_summary || '';
+        let mergedSummary = existingSummary;
+        if (!existingSummary.includes(delta)) {
+          mergedSummary = existingSummary
+            ? `${existingSummary}\n\n• ${delta.replace(/^[•\-\*]\s*/, '')}`
+            : delta;
+        }
+        const updated = { ...currentMatter, fact_summary: mergedSummary };
+        await api.updateMatter(updated);
+        setCurrentMatter(updated);
+        setFactDraft(mergedSummary);
+      }
+
+      await loadDetails(currentMatter.id);
+      onRefreshMatters();
+
+      // 4. 抽取完成后自动切到待办清单，供用户即时检查
+      setActiveTab('todos');
+    } catch (e) {
+      console.error('抽取待办与事实失败，执行兜底创建待办', e);
+      await api.createTodo({
+        matterId: currentMatter.id,
+        content: log.raw_content,
+        logId: log.id,
+      });
+      await loadDetails(currentMatter.id);
+      onRefreshMatters();
+      setActiveTab('todos');
+    } finally {
+      setExtractingLogId(null);
+    }
   };
 
   // 保存事实摘要修改
@@ -123,24 +250,24 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
     onRefreshMatters();
   };
 
-  // AI 智能重提炼
+  // AI 智能重提炼核心事实
   const handleAISummarize = async () => {
+    if (logs.length === 0) {
+      alert('当前事项尚无任何碎片日志记录，请先在时间轴中添加日志后再提炼。');
+      return;
+    }
     setIsSummarizing(true);
     try {
-      // 拼接所有日志生成摘要
-      const allText = logs.map((l) => l.raw_content).join('\n');
-      if (allText) {
-        const parsed = await api.manualParseText(allText);
-        if (parsed.extracted_facts_delta) {
-          const newFact = currentMatter.fact_summary
-            ? `${currentMatter.fact_summary}\n${parsed.extracted_facts_delta}`
-            : parsed.extracted_facts_delta;
-          setFactDraft(newFact);
-          const updated = { ...currentMatter, fact_summary: newFact };
-          await api.updateMatter(updated);
-          setCurrentMatter(updated);
-        }
+      const summarizedFacts = await api.summarizeMatterFacts(currentMatter.id);
+      if (summarizedFacts) {
+        setFactDraft(summarizedFacts);
+        const updated = { ...currentMatter, fact_summary: summarizedFacts };
+        setCurrentMatter(updated);
+        onRefreshMatters();
       }
+    } catch (e: any) {
+      console.error('AI 提炼事实沉淀失败:', e);
+      alert(`提炼失败: ${e?.message || e || '请检查日志或网络配置'}`);
     } finally {
       setIsSummarizing(false);
     }
@@ -153,11 +280,46 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
     onRefreshMatters();
   };
 
+  // 支持点击非抽屉遮罩区域自动收起
+  const isMouseDownOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 若编辑模态框未打开，按 ESC 键收起抽屉
+      if (e.key === 'Escape' && !isEditModalOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isEditModalOpen, onClose]);
+
+  const handleBackdropMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    isMouseDownOnBackdrop.current = e.target === e.currentTarget;
+  };
+
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isMouseDownOnBackdrop.current && e.target === e.currentTarget) {
+      onClose();
+    }
+    isMouseDownOnBackdrop.current = false;
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30 backdrop-blur-xs transition-opacity animate-in fade-in duration-200">
-      <div className="w-full max-w-xl h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col justify-between animate-in slide-in-from-right duration-300">
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-slate-950/45 dark:bg-black/70 backdrop-blur-sm dark:backdrop-blur-md transition-opacity animate-in fade-in duration-200"
+      onMouseDown={handleBackdropMouseDown}
+      onClick={handleBackdropClick}
+    >
+      <div
+        className="w-full max-w-xl h-full bg-white dark:bg-slate-900 border-l border-slate-200/90 dark:border-slate-700/80 ring-1 ring-slate-900/5 dark:ring-white/10 shadow-[-20px_0_50px_-10px_rgba(15,23,42,0.35),-8px_0_20px_-5px_rgba(15,23,42,0.15)] dark:shadow-[-30px_0_80px_rgba(0,0,0,0.95),-10px_0_30px_rgba(0,0,0,0.8),-1px_0_0_rgba(255,255,255,0.08)] flex flex-col justify-between animate-in slide-in-from-right duration-300 relative"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 左竖边立体微光层次线 */}
+        <div className="absolute left-0 top-0 bottom-0 w-[1px] bg-gradient-to-b from-white/90 via-white/30 to-white/70 dark:from-slate-700/60 dark:via-slate-800/30 dark:to-slate-700/50 pointer-events-none z-20" />
+
         {/* 抽屉头部 */}
-        <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex items-start justify-between gap-4">
+        <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex items-start justify-between gap-4 shrink-0">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-300">
@@ -177,9 +339,40 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
             <h2 className="text-lg font-bold text-slate-900 dark:text-white leading-tight">
               {currentMatter.title}
             </h2>
+
+            {currentMatter.related_contacts && currentMatter.related_contacts.trim() && (
+              <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                <span className="text-[11px] text-slate-400 font-medium">关联人/群:</span>
+                {currentMatter.related_contacts
+                  .split(/[,，、;； ]+/)
+                  .filter(Boolean)
+                  .map((c, i) => (
+                    <span
+                      key={i}
+                      className="px-2 py-0.5 text-[11px] font-medium rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-800/50"
+                    >
+                      @{c}
+                    </span>
+                  ))}
+              </div>
+            )}
+
+            {currentMatter.overview && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 line-clamp-2 leading-relaxed">
+                {currentMatter.overview}
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsEditModalOpen(true)}
+              className="px-2.5 py-1.5 rounded-xl text-slate-600 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5 text-xs font-semibold border border-slate-200 dark:border-slate-700"
+              title="编辑事项信息"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>编辑</span>
+            </button>
             <button
               onClick={onClose}
               className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
@@ -189,24 +382,13 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
           </div>
         </div>
 
-        {/* Tab 导航 */}
-        <div className="px-6 border-b border-slate-200 dark:border-slate-800 flex items-center gap-6 text-xs font-bold">
-          <button
-            onClick={() => setActiveTab('timeline')}
-            className={`py-3 border-b-2 transition-all flex items-center gap-1.5 ${
-              activeTab === 'timeline'
-                ? 'border-sky-600 text-sky-600 dark:text-sky-400'
-                : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
-            }`}
-          >
-            <Clock className="w-3.5 h-3.5" />
-            碎片日志时间轴 ({logs.length})
-          </button>
+        {/* Tab 导航：调整为 待办 > 决策 > 日志 */}
+        <div className="px-6 border-b border-slate-200 dark:border-slate-800 flex items-center gap-6 text-xs font-bold shrink-0">
           <button
             onClick={() => setActiveTab('todos')}
-            className={`py-3 border-b-2 transition-all flex items-center gap-1.5 ${
+            className={`py-3 border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'todos'
-                ? 'border-sky-600 text-sky-600 dark:text-sky-400'
+                ? 'border-sky-600 text-sky-600 dark:text-sky-400 font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
@@ -215,84 +397,31 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
           </button>
           <button
             onClick={() => setActiveTab('facts')}
-            className={`py-3 border-b-2 transition-all flex items-center gap-1.5 ${
+            className={`py-3 border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'facts'
-                ? 'border-sky-600 text-sky-600 dark:text-sky-400'
+                ? 'border-sky-600 text-sky-600 dark:text-sky-400 font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
-            核心事实沉淀
+            核心决策与事实沉淀
+          </button>
+          <button
+            onClick={() => setActiveTab('timeline')}
+            className={`py-3 border-b-2 transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'timeline'
+                ? 'border-sky-600 text-sky-600 dark:text-sky-400 font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            碎片日志时间轴 ({logs.length})
           </button>
         </div>
 
-        {/* 抽屉内容主体 */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* TAB 1: 碎片时间轴 */}
-          {activeTab === 'timeline' && (
-            <div className="space-y-4">
-              {/* 快速追加日志 */}
-              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/80 p-2 rounded-xl border border-slate-200 dark:border-slate-700">
-                <input
-                  type="text"
-                  value={newLogContent}
-                  onChange={(e) => setNewLogContent(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddLog()}
-                  placeholder="手动添加一条工作日志或碎片信息..."
-                  className="flex-1 px-3 py-1.5 text-xs bg-transparent outline-none text-slate-800 dark:text-white placeholder-slate-400"
-                />
-                <button
-                  onClick={handleAddLog}
-                  className="p-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-all shadow-sm"
-                  title="发送记录"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
-              {/* 时间轴流 */}
-              {logs.length === 0 ? (
-                <div className="text-center py-12 text-slate-400 text-xs">
-                  暂无日志记录，可在外部应用中划选文字并按 Alt+A 快速收集。
-                </div>
-              ) : (
-                <div className="relative pl-6 space-y-5 before:content-[''] before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200 dark:before:bg-slate-800">
-                  {logs.map((log) => (
-                    <div key={log.id} className="relative group">
-                      {/* 时间轴圆点 */}
-                      <div className="absolute -left-6 top-1.5 w-4 h-4 rounded-full bg-white dark:bg-slate-900 border-2 border-sky-500 flex items-center justify-center">
-                        <div className="w-1.5 h-1.5 rounded-full bg-sky-500" />
-                      </div>
-
-                      {/* 日志卡片 */}
-                      <div className="bg-slate-50 dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-800 transition-all">
-                        <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2">
-                          <span className="font-semibold text-sky-600 dark:text-sky-400">
-                            来自: {log.source_app} {log.source_window_title ? `· ${log.source_window_title}` : ''}
-                          </span>
-                          <span>{log.created_at}</span>
-                        </div>
-                        <p className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap">
-                          {log.raw_content}
-                        </p>
-                        <div className="mt-3 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleLogToTodo(log)}
-                            className="inline-flex items-center gap-1 text-[11px] text-sky-600 dark:text-sky-400 hover:underline"
-                          >
-                            <ArrowRight className="w-3 h-3" />
-                            抽取为待办
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB 2: 关联待办清单 */}
+        {/* 抽屉内容主体：按 待办 > 决策 > 日志 顺序渲染 */}
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-6 space-y-6">
+          {/* TAB 1: 关联待办清单 */}
           {activeTab === 'todos' && (
             <div className="space-y-4">
               {/* 快速新增待办 */}
@@ -328,16 +457,75 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
               <div className="space-y-2">
                 {todos.map((todo) => {
                   const isDone = todo.status === 'completed';
+                  const isEditing = editingTodoId === todo.id;
+
+                  if (isEditing) {
+                    return (
+                      <div
+                        key={todo.id}
+                        className="p-3 rounded-xl border border-sky-400/80 dark:border-sky-500 bg-sky-50/40 dark:bg-sky-950/20 space-y-2.5 transition-all shadow-xs"
+                      >
+                        <input
+                          type="text"
+                          value={editTodoContent}
+                          onChange={(e) => setEditTodoContent(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveEditTodo(todo.id);
+                            if (e.key === 'Escape') handleCancelEditTodo();
+                          }}
+                          placeholder="待办内容..."
+                          autoFocus
+                          className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg outline-none focus:border-sky-500 text-slate-800 dark:text-white"
+                        />
+                        <div className="flex items-center justify-between gap-2 pt-0.5">
+                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                            <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <input
+                              type="datetime-local"
+                              value={editTodoDue}
+                              onChange={(e) => setEditTodoDue(e.target.value)}
+                              className="text-[11px] bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-1 rounded text-slate-600 dark:text-slate-300 outline-none w-full max-w-[170px]"
+                            />
+                            {editTodoDue && (
+                              <button
+                                type="button"
+                                onClick={() => setEditTodoDue('')}
+                                className="text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 px-1 py-0.5"
+                                title="清空截止时间"
+                              >
+                                清除
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={handleCancelEditTodo}
+                              className="px-2.5 py-1 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-lg transition-all"
+                            >
+                              取消
+                            </button>
+                            <button
+                              onClick={() => handleSaveEditTodo(todo.id)}
+                              className="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow-xs transition-all"
+                            >
+                              保存
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={todo.id}
-                      className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
+                      className={`group flex items-center justify-between p-3 rounded-xl border transition-all ${
                         isDone
                           ? 'bg-slate-50/50 dark:bg-slate-900/50 border-slate-100 dark:border-slate-800 opacity-60'
-                          : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 shadow-xs'
+                          : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-xs'
                       }`}
                     >
-                      <div className="flex items-center gap-3 flex-1">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
                         <button
                           onClick={() => handleToggleTodo(todo)}
                           className={`shrink-0 transition-transform active:scale-90 ${
@@ -346,9 +534,13 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
                         >
                           {isDone ? <CheckCircle2 className="w-4 h-4 fill-emerald-500 text-white" /> : <Circle className="w-4 h-4" />}
                         </button>
-                        <div>
+                        <div
+                          className="flex-1 min-w-0 cursor-pointer"
+                          onDoubleClick={() => handleStartEditTodo(todo)}
+                          title="双击编辑待办"
+                        >
                           <span
-                            className={`text-xs font-medium leading-tight block ${
+                            className={`text-xs font-medium leading-tight block break-words ${
                               isDone ? 'line-through text-slate-400' : 'text-slate-800 dark:text-slate-200'
                             }`}
                           >
@@ -356,24 +548,45 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
                           </span>
                           {todo.due_time && (
                             <span className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-0.5">
-                              <Clock className="w-2.5 h-2.5" />
-                              截止/提醒: {todo.due_time}
+                              <Clock className="w-2.5 h-2.5 shrink-0" />
+                              截止/提醒: {normalizeTodoTime(todo.due_time)}
                             </span>
                           )}
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => handleToggleFocus(todo)}
-                        className={`p-1 rounded-md transition-all ${
-                          todo.is_focused
-                            ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/60'
-                            : 'text-slate-300 hover:text-amber-400'
-                        }`}
-                        title={todo.is_focused ? '取消聚焦' : '标记为核心聚焦待办'}
-                      >
-                        <Bookmark className="w-3.5 h-3.5 fill-current" />
-                      </button>
+                      <div className="flex items-center gap-0.5 shrink-0 ml-2">
+                        {/* 编辑按钮 */}
+                        <button
+                          onClick={() => handleStartEditTodo(todo)}
+                          className="p-1 rounded-md text-slate-400 hover:text-sky-600 hover:bg-sky-50 dark:hover:bg-slate-700/80 opacity-60 group-hover:opacity-100 transition-all"
+                          title="编辑待办"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* 删除按钮 */}
+                        <button
+                          onClick={() => handleDeleteTodo(todo.id)}
+                          className="p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-slate-700/80 opacity-60 group-hover:opacity-100 transition-all"
+                          title="删除待办"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* 聚焦按钮 */}
+                        <button
+                          onClick={() => handleToggleFocus(todo)}
+                          className={`p-1 rounded-md transition-all ${
+                            todo.is_focused
+                              ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/60'
+                              : 'text-slate-300 hover:text-amber-400'
+                          }`}
+                          title={todo.is_focused ? '取消聚焦' : '标记为核心聚焦待办'}
+                        >
+                          <Bookmark className="w-3.5 h-3.5 fill-current" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -381,7 +594,7 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
             </div>
           )}
 
-          {/* TAB 3: 核心事实沉淀 */}
+          {/* TAB 2: 核心决策与事实沉淀 */}
           {activeTab === 'facts' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
@@ -434,8 +647,86 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
               )}
             </div>
           )}
+
+          {/* TAB 3: 碎片日志时间轴 */}
+          {activeTab === 'timeline' && (
+            <div className="space-y-4">
+              {/* 快速追加日志 */}
+              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/80 p-2 rounded-xl border border-slate-200 dark:border-slate-700">
+                <input
+                  type="text"
+                  value={newLogContent}
+                  onChange={(e) => setNewLogContent(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddLog()}
+                  placeholder="手动添加一条工作日志或碎片信息..."
+                  className="flex-1 px-3 py-1.5 text-xs bg-transparent outline-none text-slate-800 dark:text-white placeholder-slate-400"
+                />
+                <button
+                  onClick={handleAddLog}
+                  className="p-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-all shadow-sm"
+                  title="发送记录"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* 时间轴流 */}
+              {logs.length === 0 ? (
+                <div className="text-center py-12 text-slate-400 text-xs">
+                  暂无日志记录，可在外部应用中划选文字并按 Alt+A 快速收集。
+                </div>
+              ) : (
+                <div className="relative pl-6 space-y-5 before:content-[''] before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200 dark:before:bg-slate-800">
+                  {logs.map((log) => (
+                    <div key={log.id} className="relative group">
+                      {/* 时间轴圆点 */}
+                      <div className="absolute -left-6 top-1.5 w-4 h-4 rounded-full bg-white dark:bg-slate-900 border-2 border-sky-500 flex items-center justify-center">
+                        <div className="w-1.5 h-1.5 rounded-full bg-sky-500" />
+                      </div>
+
+                      {/* 日志卡片 */}
+                      <div className="bg-slate-50 dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-800 transition-all">
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2">
+                          <span className="font-semibold text-sky-600 dark:text-sky-400">
+                            来自: {log.source_app} {log.source_window_title ? `· ${log.source_window_title}` : ''}
+                          </span>
+                          <span>{log.created_at}</span>
+                        </div>
+                        <p className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-wrap">
+                          {log.raw_content}
+                        </p>
+                        <div className="mt-3 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => handleExtractTodosAndFacts(log)}
+                            disabled={extractingLogId === log.id}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:text-sky-700 dark:hover:text-sky-300 hover:bg-sky-50 dark:hover:bg-sky-950/50 rounded-lg transition-all cursor-pointer disabled:opacity-50"
+                            title="由 AI 智能解析本条日志，抽取待办事项并沉淀核心事实"
+                          >
+                            <Sparkles className={`w-3.5 h-3.5 ${extractingLogId === log.id ? 'animate-spin text-sky-500' : 'text-sky-500'}`} />
+                            <span>{extractingLogId === log.id ? '正在抽取出待办与事实...' : '抽取出待办与事实'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {/* 事项全量属性编辑模态弹窗 */}
+      <EditMatterModal
+        matter={currentMatter}
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        onSuccess={(updated) => {
+          setCurrentMatter(updated);
+          setFactDraft(updated.fact_summary || '');
+          onRefreshMatters();
+        }}
+      />
     </div>
   );
 };

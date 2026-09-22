@@ -9,6 +9,7 @@ import {
   ConfirmRoutePayload,
   CategorizePayload,
   CapturedContext,
+  CompactDockState,
 } from '../types';
 
 // 检测是否处于 Tauri 环境
@@ -583,15 +584,63 @@ export const api = {
     }
   },
 
-  async enterCompactMode(): Promise<void> {
+  async enterCompactMode(): Promise<CompactDockState> {
     if (isTauri) {
       return invoke('enter_compact_mode');
     }
+    return { edge: 'top', is_hidden: false, is_locked: false };
   },
 
   async exitCompactMode(): Promise<void> {
     if (isTauri) {
       return invoke('exit_compact_mode');
+    }
+  },
+
+  async compactSlideIn(): Promise<CompactDockState> {
+    if (isTauri) {
+      return invoke('compact_slide_in');
+    }
+    return { edge: 'top', is_hidden: true, is_locked: false };
+  },
+
+  async compactSlideOut(): Promise<CompactDockState> {
+    if (isTauri) {
+      return invoke('compact_slide_out');
+    }
+    return { edge: 'top', is_hidden: false, is_locked: false };
+  },
+
+  async updateCompactDockState(): Promise<CompactDockState> {
+    if (isTauri) {
+      return invoke('update_compact_dock_state');
+    }
+    return { edge: 'top', is_hidden: false, is_locked: false };
+  },
+
+  async getCompactDockState(): Promise<CompactDockState> {
+    if (isTauri) {
+      return invoke('get_compact_dock_state');
+    }
+    return { edge: 'top', is_hidden: false, is_locked: false };
+  },
+
+  async toggleCompactDockLock(): Promise<CompactDockState> {
+    if (isTauri) {
+      return invoke('toggle_compact_dock_lock');
+    }
+    return { edge: 'top', is_hidden: false, is_locked: false };
+  },
+
+  async setCompactBusy(busy: boolean): Promise<void> {
+    if (isTauri) {
+      return invoke('set_compact_busy', { busy });
+    }
+  },
+
+  async startDraggingWindow(): Promise<void> {
+    if (isTauri) {
+      return invoke('start_dragging_window');
     }
   },
 

@@ -144,3 +144,11 @@ export interface CategorizePayload {
   new_todos: ExtractedTodo[];
   todo_updates?: TodoUpdateSuggestion[];
 }
+
+export type CompactDockEdge = 'none' | 'top' | 'left' | 'right';
+
+export interface CompactDockState {
+  edge: CompactDockEdge;
+  is_hidden: boolean;
+  is_locked: boolean;
+}

@@ -6,10 +6,19 @@ use crate::models::{
 use crate::services::ai_service::AIService;
 use crate::services::clipboard_service::ClipboardService;
 use chrono::Local;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+
+#[cfg(windows)]
+use windows::Win32::Foundation::POINT;
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+#[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 
 pub type DbState = Arc<Mutex<Database>>;
 
@@ -657,39 +666,59 @@ pub async fn summarize_matter_facts(
     Ok(summary)
 }
 
+// ==================== 缩略模式与贴边停靠/抽拉动画 ====================
+
 // 记录进入缩略模式前的主窗口位置与尺寸 (物理像素)
 static SAVED_WINDOW_STATE: Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>> =
     Mutex::new(None);
 
-/// 进入缩略模式：缩小窗口为 360x580，吸附至桌面右上角，并常驻置顶
-#[tauri::command]
-pub fn enter_compact_mode(app: AppHandle) -> Result<(), String> {
-    let win = app
-        .get_webview_window("main")
-        .ok_or_else(|| "未找到主窗口".to_string())?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactDockEdge {
+    None,
+    Top,
+    Left,
+    Right,
+}
 
-    // 1. 保存进入缩略模式前的窗口位置与大小
-    if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
-        if let Ok(mut saved) = SAVED_WINDOW_STATE.lock() {
-            *saved = Some((pos, size));
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactDockState {
+    pub edge: CompactDockEdge,
+    pub is_hidden: bool,
+    pub is_locked: bool,
+}
 
-    // 2. 调小最小尺寸限制（原默认是 800x600）
-    let _ = win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
-        width: 280.0,
-        height: 320.0,
-    })));
+static COMPACT_DOCK_STATE: Mutex<CompactDockState> = Mutex::new(CompactDockState {
+    edge: CompactDockEdge::None,
+    is_hidden: false,
+    is_locked: false,
+});
 
-    // 3. 设置缩略微窗逻辑尺寸 (360x580)
-    let target_w = 360.0;
-    let target_h = 580.0;
-    let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
-        width: target_w,
-        height: target_h,
-    }));
+// 记录展开状态下的物理坐标 (x, y)，无论拖动到哪，均保持该位置展开
+static EXPANDED_PHYSICAL_POS: Mutex<Option<tauri::PhysicalPosition<i32>>> = Mutex::new(None);
 
-    // 4. 精准计算工作区，定位到当前屏幕的桌面右上角
+pub static IS_COMPACT_MODE: AtomicBool = AtomicBool::new(false);
+pub static IS_ANIMATING: AtomicBool = AtomicBool::new(false);
+pub static IS_COMPACT_BUSY: AtomicBool = AtomicBool::new(false);
+
+const VISIBLE_MARGIN_PX: i32 = 15; // 收起后露出 15 像素精致边框，指示停靠位置
+const EDGE_DOCK_THRESHOLD_PX: i32 = 35; // 贴边吸附判定阈值
+
+/// 获取当前显示器的工作区边界 (left, top, right, bottom)
+fn get_monitor_bounds(win: &tauri::WebviewWindow) -> Result<(i32, i32, i32, i32), String> {
+    let monitor = win
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "无法获取当前显示器".to_string())?;
+
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+
+    let mut bound_left = mon_pos.x;
+    let mut bound_top = mon_pos.y;
+    let mut bound_right = mon_pos.x + mon_size.width as i32;
+    let mut bound_bottom = mon_pos.y + mon_size.height as i32;
+
     #[cfg(windows)]
     {
         use windows::Win32::Foundation::RECT;
@@ -708,65 +737,358 @@ pub fn enter_compact_mode(app: AppHandle) -> Result<(), String> {
         };
 
         if success.is_ok() && work_area.right > work_area.left {
-            let win_size = win.outer_size().unwrap_or(tauri::PhysicalSize {
-                width: 360,
-                height: 580,
-            });
-            let margin = 16;
-            let x = work_area.right - (win_size.width as i32) - margin;
-            let y = work_area.top + margin;
-            let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-        } else if let Ok(Some(monitor)) = win.current_monitor() {
-            let screen_size = monitor.size();
-            let scale = monitor.scale_factor();
-            let win_width = (target_w * scale) as i32;
-            let margin_x = (16.0 * scale) as i32;
-            let margin_y = (16.0 * scale) as i32;
-            let x = (screen_size.width as i32) - win_width - margin_x;
-            let y = margin_y;
-            let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+            if mon_pos.x == 0 && mon_pos.y == 0 {
+                bound_left = work_area.left;
+                bound_top = work_area.top;
+                bound_right = work_area.right;
+                bound_bottom = work_area.bottom;
+            }
         }
     }
 
-    #[cfg(not(windows))]
-    {
-        if let Ok(Some(monitor)) = win.current_monitor() {
-            let screen_size = monitor.size();
-            let scale = monitor.scale_factor();
-            let win_width = (target_w * scale) as i32;
-            let margin_x = (16.0 * scale) as i32;
-            let margin_y = (16.0 * scale) as i32;
-            let x = (screen_size.width as i32) - win_width - margin_x;
-            let y = margin_y;
-            let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-        }
-    }
-
-    // 5. 确保窗口非置顶、正常显示与焦点唤醒
-    let _ = win.set_always_on_top(false);
-    let _ = win.show();
-    let _ = win.set_focus();
-
-    Ok(())
+    Ok((bound_left, bound_top, bound_right, bound_bottom))
 }
 
-/// 退出缩略模式：恢复进入前的全屏/居中尺寸与位置，取消常驻置顶
+/// 用户手动拖动主窗口后的实时贴边判定与坐标更新 (完全支持自由拖拽与随处停靠)
+pub fn handle_main_window_moved(win: &tauri::WebviewWindow, pos: tauri::PhysicalPosition<i32>) {
+    if IS_ANIMATING.load(Ordering::SeqCst) || !IS_COMPACT_MODE.load(Ordering::SeqCst) {
+        return;
+    }
+
+    if let Ok(guard) = COMPACT_DOCK_STATE.lock() {
+        if guard.is_hidden {
+            return;
+        }
+    }
+
+    if let Ok(bounds) = get_monitor_bounds(win) {
+        let (bound_left, bound_top, bound_right, _bound_bottom) = bounds;
+        let size = win.outer_size().unwrap_or(tauri::PhysicalSize { width: 360, height: 580 });
+
+        let is_top = (pos.y - bound_top).abs() <= EDGE_DOCK_THRESHOLD_PX || pos.y < bound_top;
+        let is_left = (pos.x - bound_left).abs() <= EDGE_DOCK_THRESHOLD_PX || pos.x < bound_left;
+        let is_right = ((pos.x + size.width as i32) - bound_right).abs() <= EDGE_DOCK_THRESHOLD_PX
+            || (pos.x + size.width as i32) > bound_right;
+
+        let edge = if is_top {
+            CompactDockEdge::Top
+        } else if is_right {
+            CompactDockEdge::Right
+        } else if is_left {
+            CompactDockEdge::Left
+        } else {
+            CompactDockEdge::None
+        };
+
+        let is_locked = if let Ok(guard) = COMPACT_DOCK_STATE.lock() {
+            guard.is_locked
+        } else {
+            false
+        };
+
+        let new_state = CompactDockState {
+            edge,
+            is_hidden: false,
+            is_locked,
+        };
+
+        if let Ok(mut guard) = COMPACT_DOCK_STATE.lock() {
+            *guard = new_state.clone();
+        }
+
+        // 核心：记录用户当前拖动停留的位置！
+        // 拖到哪就在哪个位置吸附，展开时也精确回到该位置！
+        if edge == CompactDockEdge::Top {
+            if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+                *exp_pos = Some(tauri::PhysicalPosition { x: pos.x, y: bound_top });
+            }
+        } else if edge == CompactDockEdge::Right {
+            if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+                *exp_pos = Some(tauri::PhysicalPosition { x: bound_right - size.width as i32, y: pos.y });
+            }
+        } else if edge == CompactDockEdge::Left {
+            if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+                *exp_pos = Some(tauri::PhysicalPosition { x: bound_left, y: pos.y });
+            }
+        } else {
+            // 自由悬浮状态，更新记录当前坐标
+            if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+                *exp_pos = Some(pos);
+            }
+        }
+
+        let _ = win.emit("compact-dock-changed", &new_state);
+    }
+}
+
+/// 窗口位置平滑插值动画 (Ease-Out 二次缓动，丝滑抽拉)
+async fn animate_window_position(
+    win: &tauri::WebviewWindow,
+    start: tauri::PhysicalPosition<i32>,
+    target: tauri::PhysicalPosition<i32>,
+    steps: usize,
+    step_duration_ms: u64,
+) {
+    if steps <= 1 || (start.x == target.x && start.y == target.y) {
+        let _ = win.set_position(tauri::Position::Physical(target));
+        return;
+    }
+
+    IS_ANIMATING.store(true, Ordering::SeqCst);
+
+    for i in 1..=steps {
+        let progress = i as f32 / steps as f32;
+        let ease = 1.0 - (1.0 - progress) * (1.0 - progress);
+        let curr_x = start.x + (((target.x - start.x) as f32) * ease).round() as i32;
+        let curr_y = start.y + (((target.y - start.y) as f32) * ease).round() as i32;
+
+        let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: curr_x,
+            y: curr_y,
+        }));
+        tokio::time::sleep(Duration::from_millis(step_duration_ms)).await;
+    }
+
+    let _ = win.set_position(tauri::Position::Physical(target));
+    IS_ANIMATING.store(false, Ordering::SeqCst);
+}
+
+/// 启动全局后台鼠标探测守护任务 (类似 QQ 边栏停靠：鼠标移入露出的边边即自动下滑展开，移出 400ms 自动收缩)
+pub fn start_compact_mouse_monitor(app: AppHandle) {
+    #[cfg(windows)]
+    tauri::async_runtime::spawn(async move {
+        let mut mouse_leave_start: Option<std::time::Instant> = None;
+
+        loop {
+            tokio::time::sleep(Duration::from_millis(35)).await;
+
+            if !IS_COMPACT_MODE.load(Ordering::SeqCst) || IS_ANIMATING.load(Ordering::SeqCst) {
+                mouse_leave_start = None;
+                continue;
+            }
+
+            let win = match app.get_webview_window("main") {
+                Some(w) => w,
+                None => continue,
+            };
+
+            let state = match COMPACT_DOCK_STATE.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => continue,
+            };
+
+            // 未贴边吸附（自由悬浮在屏幕中），不执行自动收起/展开
+            if state.edge == CompactDockEdge::None {
+                mouse_leave_start = None;
+                continue;
+            }
+
+            let mut pt = POINT::default();
+            if unsafe { GetCursorPos(&mut pt) }.is_err() {
+                continue;
+            }
+
+            let win_pos = match win.outer_position() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let win_size = match win.outer_size() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let bounds = match get_monitor_bounds(&win) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            let (bound_left, bound_top, bound_right, _bound_bottom) = bounds;
+
+            if state.is_hidden {
+                // 处于收起状态：检测鼠标是否碰到屏幕顶端/边栏露出的那条边边
+                let in_edge = match state.edge {
+                    CompactDockEdge::Top => {
+                        pt.x >= win_pos.x && pt.x <= win_pos.x + win_size.width as i32
+                            && pt.y >= bound_top && pt.y <= bound_top + VISIBLE_MARGIN_PX + 6
+                    }
+                    CompactDockEdge::Right => {
+                        pt.x >= bound_right - VISIBLE_MARGIN_PX - 6 && pt.x <= bound_right
+                            && pt.y >= win_pos.y && pt.y <= win_pos.y + win_size.height as i32
+                    }
+                    CompactDockEdge::Left => {
+                        pt.x >= bound_left && pt.x <= bound_left + VISIBLE_MARGIN_PX + 6
+                            && pt.y >= win_pos.y && pt.y <= win_pos.y + win_size.height as i32
+                    }
+                    CompactDockEdge::None => false,
+                };
+
+                if in_edge {
+                    // 鼠标移到了露出的一点点边边！无需点击，自动向下滑出展开！
+                    mouse_leave_start = None;
+                    let _ = compact_slide_out(app.clone()).await;
+                }
+            } else {
+                // 处于展开状态：检测鼠标是否在窗体内
+                let margin_tolerance = 12;
+                let inside_win = match state.edge {
+                    CompactDockEdge::Top => {
+                        pt.x >= win_pos.x - margin_tolerance
+                            && pt.x <= win_pos.x + win_size.width as i32 + margin_tolerance
+                            && pt.y >= bound_top
+                            && pt.y <= win_pos.y + win_size.height as i32 + margin_tolerance
+                    }
+                    CompactDockEdge::Right => {
+                        pt.x >= win_pos.x - margin_tolerance
+                            && pt.x <= bound_right
+                            && pt.y >= win_pos.y - margin_tolerance
+                            && pt.y <= win_pos.y + win_size.height as i32 + margin_tolerance
+                    }
+                    CompactDockEdge::Left => {
+                        pt.x >= bound_left
+                            && pt.x <= win_pos.x + win_size.width as i32 + margin_tolerance
+                            && pt.y >= win_pos.y - margin_tolerance
+                            && pt.y <= win_pos.y + win_size.height as i32 + margin_tolerance
+                    }
+                    CompactDockEdge::None => true,
+                };
+
+                #[cfg(windows)]
+                let is_lbutton_down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
+                #[cfg(not(windows))]
+                let is_lbutton_down = false;
+
+                // 用户鼠标左键正按下（正在拖动或点击窗口），绝不自动收起！
+                if is_lbutton_down {
+                    mouse_leave_start = None;
+                    continue;
+                }
+
+                if inside_win {
+                    mouse_leave_start = None;
+                } else {
+                    if state.is_locked || IS_COMPACT_BUSY.load(Ordering::SeqCst) {
+                        mouse_leave_start = None;
+                    } else {
+                        let now = std::time::Instant::now();
+                        match mouse_leave_start {
+                            None => {
+                                mouse_leave_start = Some(now);
+                            }
+                            Some(start_time) => {
+                                if now.duration_since(start_time).as_millis() >= 400 {
+                                    // 移出超过 400ms，自动平滑收纳回边栏！
+                                    mouse_leave_start = None;
+                                    let _ = compact_slide_in(app.clone()).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// 进入缩略模式：缩小为无边框 360x580 便签微窗，吸附至屏幕顶端偏右，常驻置顶
 #[tauri::command]
-pub fn exit_compact_mode(app: AppHandle) -> Result<(), String> {
+pub async fn enter_compact_mode(app: AppHandle) -> Result<CompactDockState, String> {
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| "未找到主窗口".to_string())?;
 
-    // 1. 取消常驻置顶
-    let _ = win.set_always_on_top(false);
+    // 1. 保存进入缩略模式前的主窗口位置与大小
+    if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+        if let Ok(mut saved) = SAVED_WINDOW_STATE.lock() {
+            *saved = Some((pos, size));
+        }
+    }
 
-    // 2. 恢复原默认最小尺寸限制 (800x600)
+    // 2. 去除系统原生标题栏
+    let _ = win.set_decorations(false);
+
+    // 3. 调小最小尺寸限制
+    let _ = win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
+        width: 280.0,
+        height: 320.0,
+    })));
+
+    // 4. 设置缩略微窗逻辑尺寸 (360x580)
+    let target_w = 360.0;
+    let target_h = 580.0;
+    let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: target_w,
+        height: target_h,
+    }));
+
+    // 5. 定位到当前屏幕右上角并贴近顶边
+    let bounds = get_monitor_bounds(&win).unwrap_or((0, 0, 1920, 1080));
+    let win_size = win.outer_size().unwrap_or(tauri::PhysicalSize {
+        width: 360,
+        height: 580,
+    });
+
+    let margin_x = 32;
+    let x = bounds.2 - (win_size.width as i32) - margin_x;
+    let y = bounds.1; // 贴齐顶边
+
+    let init_pos = tauri::PhysicalPosition { x, y };
+    let _ = win.set_position(tauri::Position::Physical(init_pos));
+
+    // 6. 缩略模式下常驻置顶
+    let _ = win.set_always_on_top(true);
+    let _ = win.show();
+    let _ = win.set_focus();
+
+    // 7. 贴边状态初始化
+    let initial_state = CompactDockState {
+        edge: CompactDockEdge::Top,
+        is_hidden: false,
+        is_locked: false,
+    };
+
+    if let Ok(mut state) = COMPACT_DOCK_STATE.lock() {
+        *state = initial_state.clone();
+    }
+    if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+        *exp_pos = Some(init_pos);
+    }
+
+    IS_COMPACT_MODE.store(true, Ordering::SeqCst);
+    IS_COMPACT_BUSY.store(false, Ordering::SeqCst);
+
+    let _ = win.emit("compact-dock-changed", &initial_state);
+
+    Ok(initial_state)
+}
+
+/// 退出缩略模式：恢复进入前的全屏/居中尺寸与位置，恢复系统标题栏，取消置顶
+#[tauri::command]
+pub async fn exit_compact_mode(app: AppHandle) -> Result<(), String> {
+    IS_COMPACT_MODE.store(false, Ordering::SeqCst);
+
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+
+    let _ = win.set_always_on_top(false);
+    let _ = win.set_decorations(true);
+
     let _ = win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
         width: 800.0,
         height: 600.0,
     })));
 
-    // 3. 恢复进入缩略模式前保存的窗口尺寸与位置
+    let reset_state = CompactDockState {
+        edge: CompactDockEdge::None,
+        is_hidden: false,
+        is_locked: false,
+    };
+    if let Ok(mut state) = COMPACT_DOCK_STATE.lock() {
+        *state = reset_state.clone();
+    }
+    if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+        *exp_pos = None;
+    }
+
     let saved_opt = {
         if let Ok(saved) = SAVED_WINDOW_STATE.lock() {
             *saved
@@ -787,6 +1109,188 @@ pub fn exit_compact_mode(app: AppHandle) -> Result<(), String> {
     }
 
     let _ = win.set_focus();
+    let _ = win.emit("compact-dock-changed", &reset_state);
 
     Ok(())
+}
+
+/// 收起隐藏：窗口平滑缩入对应屏幕边栏，露出 20px 边框
+#[tauri::command]
+pub async fn compact_slide_in(app: AppHandle) -> Result<CompactDockState, String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+
+    let state = {
+        let guard = COMPACT_DOCK_STATE.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+
+    if state.is_locked || state.edge == CompactDockEdge::None || state.is_hidden {
+        return Ok(state);
+    }
+
+    let current_pos = win.outer_position().map_err(|e| e.to_string())?;
+    let size = win.outer_size().map_err(|e| e.to_string())?;
+    let bounds = get_monitor_bounds(&win)?;
+
+    // 保存当前用户放置的展开物理坐标
+    if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+        *exp_pos = Some(current_pos);
+    }
+
+    let (bound_left, bound_top, bound_right, _bound_bottom) = bounds;
+
+    // 在用户当前放置的 X 坐标处，向上缩回收纳，露出底部 VISIBLE_MARGIN_PX
+    let target_pos = match state.edge {
+        CompactDockEdge::Top => tauri::PhysicalPosition {
+            x: current_pos.x,
+            y: bound_top - (size.height as i32) + VISIBLE_MARGIN_PX,
+        },
+        CompactDockEdge::Right => tauri::PhysicalPosition {
+            x: bound_right - VISIBLE_MARGIN_PX,
+            y: current_pos.y,
+        },
+        CompactDockEdge::Left => tauri::PhysicalPosition {
+            x: bound_left - (size.width as i32) + VISIBLE_MARGIN_PX,
+            y: current_pos.y,
+        },
+        CompactDockEdge::None => current_pos,
+    };
+
+    animate_window_position(&win, current_pos, target_pos, 7, 10).await;
+    let _ = win.set_always_on_top(true);
+
+    let new_state = CompactDockState {
+        edge: state.edge,
+        is_hidden: true,
+        is_locked: state.is_locked,
+    };
+
+    if let Ok(mut guard) = COMPACT_DOCK_STATE.lock() {
+        *guard = new_state.clone();
+    }
+
+    let _ = win.emit("compact-dock-changed", &new_state);
+    Ok(new_state)
+}
+
+/// 滑出展开：窗口从屏幕边栏平滑向下滑出，展示完整的缩略模式窗体
+#[tauri::command]
+pub async fn compact_slide_out(app: AppHandle) -> Result<CompactDockState, String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+
+    let state = {
+        let guard = COMPACT_DOCK_STATE.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+
+    if !state.is_hidden || state.edge == CompactDockEdge::None {
+        return Ok(state);
+    }
+
+    let current_pos = win.outer_position().map_err(|e| e.to_string())?;
+    let size = win.outer_size().map_err(|e| e.to_string())?;
+    let bounds = get_monitor_bounds(&win)?;
+    let (bound_left, bound_top, bound_right, _bound_bottom) = bounds;
+
+    let saved_pos = {
+        if let Ok(guard) = EXPANDED_PHYSICAL_POS.lock() {
+            *guard
+        } else {
+            None
+        }
+    };
+
+    let target_pos = match state.edge {
+        CompactDockEdge::Top => tauri::PhysicalPosition {
+            x: saved_pos.map(|p| p.x).unwrap_or(current_pos.x),
+            y: bound_top,
+        },
+        CompactDockEdge::Right => tauri::PhysicalPosition {
+            x: bound_right - (size.width as i32),
+            y: saved_pos.map(|p| p.y).unwrap_or(current_pos.y),
+        },
+        CompactDockEdge::Left => tauri::PhysicalPosition {
+            x: bound_left,
+            y: saved_pos.map(|p| p.y).unwrap_or(current_pos.y),
+        },
+        CompactDockEdge::None => current_pos,
+    };
+
+    animate_window_position(&win, current_pos, target_pos, 7, 10).await;
+
+    if let Ok(mut exp_pos) = EXPANDED_PHYSICAL_POS.lock() {
+        *exp_pos = Some(target_pos);
+    }
+
+    let new_state = CompactDockState {
+        edge: state.edge,
+        is_hidden: false,
+        is_locked: state.is_locked,
+    };
+
+    if let Ok(mut guard) = COMPACT_DOCK_STATE.lock() {
+        *guard = new_state.clone();
+    }
+
+    let _ = win.emit("compact-dock-changed", &new_state);
+    Ok(new_state)
+}
+
+/// 窗口拖拽或移动后重新检测贴边吸附状态
+#[tauri::command]
+pub fn update_compact_dock_state(app: AppHandle) -> Result<CompactDockState, String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+
+    if let Ok(pos) = win.outer_position() {
+        handle_main_window_moved(&win, pos);
+    }
+
+    let guard = COMPACT_DOCK_STATE.lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+/// 获取当前贴边停靠状态
+#[tauri::command]
+pub fn get_compact_dock_state() -> Result<CompactDockState, String> {
+    let guard = COMPACT_DOCK_STATE.lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+/// 切换是否锁定常驻（防止鼠标移出自动收起）
+#[tauri::command]
+pub fn toggle_compact_dock_lock(app: AppHandle) -> Result<CompactDockState, String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+
+    let new_state = {
+        let mut guard = COMPACT_DOCK_STATE.lock().map_err(|e| e.to_string())?;
+        guard.is_locked = !guard.is_locked;
+        guard.clone()
+    };
+
+    let _ = win.emit("compact-dock-changed", &new_state);
+    Ok(new_state)
+}
+
+/// 设置前端是否处于忙碌状态（如打开添加待办输入框，防止自动收起）
+#[tauri::command]
+pub fn set_compact_busy(busy: bool) -> Result<(), String> {
+    IS_COMPACT_BUSY.store(busy, Ordering::SeqCst);
+    Ok(())
+}
+
+/// 原生窗口拖拽接口 (供前端标题栏 onMouseDown 直接调用，彻底保证无边框窗口拖动 100% 灵敏生效)
+#[tauri::command]
+pub fn start_dragging_window(app: AppHandle) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+    win.start_dragging().map_err(|e| e.to_string())
 }

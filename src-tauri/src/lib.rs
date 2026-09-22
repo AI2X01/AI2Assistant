@@ -107,15 +107,28 @@ pub fn run() {
             // 6. 默认开启 Windows 开机自启动
             let _ = crate::services::autostart_service::AutostartService::set_enabled(true);
 
+            // 7. 启动桌面缩略模式贴边鼠标感应守护任务 (类似 QQ 边栏停靠自动下滑)
+            crate::commands::start_compact_mouse_monitor(app.handle().clone());
+
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    println!("[WindowEvent] 主窗口收到关闭事件，转为隐藏至托盘");
-                    api.prevent_close();
-                    let _ = window.hide();
+            match event {
+                tauri::WindowEvent::Moved(physical_pos) => {
+                    if window.label() == "main" {
+                        if let Some(main_webview) = window.get_webview_window("main") {
+                            crate::commands::handle_main_window_moved(&main_webview, *physical_pos);
+                        }
+                    }
                 }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == "main" {
+                        println!("[WindowEvent] 主窗口收到关闭事件，转为隐藏至托盘");
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -150,6 +163,13 @@ pub fn run() {
             summarize_matter_facts,
             enter_compact_mode,
             exit_compact_mode,
+            compact_slide_in,
+            compact_slide_out,
+            update_compact_dock_state,
+            get_compact_dock_state,
+            toggle_compact_dock_lock,
+            set_compact_busy,
+            start_dragging_window,
             undo_todo_update,
             resize_hud_window,
             is_autostart_enabled,

@@ -594,4 +594,17 @@ export const api = {
       return invoke('exit_compact_mode');
     }
   },
+
+  async isAutostartEnabled(): Promise<boolean> {
+    if (isTauri) {
+      return invoke('is_autostart_enabled');
+    }
+    return true;
+  },
+
+  async setAutostart(enabled: boolean): Promise<void> {
+    if (isTauri) {
+      return invoke('set_autostart', { enabled });
+    }
+  },
 };

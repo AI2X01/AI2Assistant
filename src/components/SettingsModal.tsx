@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Key, Zap, Sliders, Database, CheckCircle2, AlertCircle, UserCheck, Palette, Sun, Moon, Laptop } from 'lucide-react';
+import { X, Key, Zap, Sliders, Database, CheckCircle2, AlertCircle, UserCheck, Palette, Sun, Moon, Laptop, Power } from 'lucide-react';
 import { AppConfig, ThemeMode } from '../types';
 import { api } from '../services/api';
 import { HotkeyInput } from './HotkeyInput';
@@ -26,6 +26,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     theme: theme,
   });
 
+  const [isAutostart, setIsAutostart] = useState(true);
   const [testStatus, setTestStatus] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -38,7 +39,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         theme: (cfg.theme as ThemeMode) || theme,
       });
     });
+    api.isAutostartEnabled().then((enabled) => {
+      setIsAutostart(enabled);
+    });
   }, [theme]);
+
+  const handleToggleAutostart = async () => {
+    const nextVal = !isAutostart;
+    setIsAutostart(nextVal);
+    try {
+      await api.setAutostart(nextVal);
+    } catch (e) {
+      console.error('切换开机自启动失败', e);
+      setIsAutostart(!nextVal);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -355,6 +370,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               <p className="text-[10px] text-slate-400 mt-1">
                 当 AI 对已有事项的匹配得分大于该阈值时，自动归档并提取事实与待办，不弹打扰微窗。
               </p>
+            </div>
+          </div>
+
+          <hr className="border-slate-100 dark:border-slate-800" />
+
+          {/* 系统运行与开机自启动 */}
+          <div className="space-y-3.5">
+            <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-bold">
+              <Power className="w-4 h-4 text-emerald-500" />
+              <span>系统运行与开机启动</span>
+            </div>
+
+            <div className="flex items-center justify-between p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800/40">
+              <div className="flex flex-col pr-4">
+                <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  开机自动启动 (后台常驻)
+                </span>
+                <span className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                  Windows 开机登录后自动启动并在后台托盘常驻，守护全局划选感知与待办到期提醒
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleAutostart}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  isAutostart ? 'bg-sky-500' : 'bg-slate-300 dark:bg-slate-700'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    isAutostart ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
             </div>
           </div>
 

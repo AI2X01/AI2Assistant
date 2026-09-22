@@ -611,6 +611,16 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn is_autostart_enabled() -> Result<bool, String> {
+    Ok(crate::services::autostart_service::AutostartService::is_enabled())
+}
+
+#[tauri::command]
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    crate::services::autostart_service::AutostartService::set_enabled(enabled)
+}
+
+#[tauri::command]
 pub async fn summarize_matter_facts(
     db: State<'_, DbState>,
     matter_id: String,

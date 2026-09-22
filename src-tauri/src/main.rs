@@ -1,4 +1,4 @@
-// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -8,7 +8,11 @@ fn main() {
             info.payload().downcast_ref::<&str>()
         );
         eprintln!("{}", msg);
-        let _ = std::fs::write("D:\\code\\AI2Assistant\\panic_info.log", msg);
+        if let Ok(mut path) = std::env::current_exe() {
+            path.pop();
+            path.push("panic_info.log");
+            let _ = std::fs::write(path, &msg);
+        }
     }));
 
     println!("[AI2Assistant] 应用启动中...");

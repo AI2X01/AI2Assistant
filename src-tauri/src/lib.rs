@@ -104,6 +104,9 @@ pub fn run() {
                 }
             }
 
+            // 6. 默认开启 Windows 开机自启动
+            let _ = crate::services::autostart_service::AutostartService::set_enabled(true);
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -148,7 +151,9 @@ pub fn run() {
             enter_compact_mode,
             exit_compact_mode,
             undo_todo_update,
-            resize_hud_window
+            resize_hud_window,
+            is_autostart_enabled,
+            set_autostart
         ])
         .build(tauri::generate_context!())
         .expect("运行 Tauri 应用程序时发生异常")

@@ -94,7 +94,7 @@ export const StructuredFactsView: React.FC<StructuredFactsViewProps> = ({
 
       const id = `item-${idx}`;
 
-      // 提取 key-value (例如 "结算范围: 泰语项目..." 或 "风险提示: ...")
+      // 提取 key-value (例如 "交付范围: 华东二期工程..." 或 "风险提示: ...")
       let key: string | undefined = undefined;
       let value = cleanLine;
       const kvMatch = cleanLine.match(/^([^：:\n]{2,16})[：:]\s*(.*)$/);

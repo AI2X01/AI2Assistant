@@ -244,7 +244,7 @@ export const CategorizeModal: React.FC<CategorizeModalProps> = ({
           <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1.5">
             <div className="flex items-center justify-between text-[11px] text-slate-400">
               <span className="font-semibold text-sky-600 dark:text-sky-400">
-                来源: {log.source_app || '外部应用'} {log.source_window_title ? `· ${log.source_window_title}` : ''}
+                来源: {log.source_app || '外部应用'} {log.source_window_title && log.source_window_title !== log.source_app ? `· ${log.source_window_title}` : ''}
               </span>
               <span>{log.created_at}</span>
             </div>
@@ -347,7 +347,7 @@ export const CategorizeModal: React.FC<CategorizeModalProps> = ({
                   type="text"
                   value={newRelatedContacts}
                   onChange={(e) => setNewRelatedContacts(e.target.value)}
-                  placeholder="例如：潮汕话标注群, 陈伟豪, 李总"
+                  placeholder="例如：核心交付攻坚群, 王经理, 张工"
                   className="w-full px-3 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-sky-500"
                 />
               </div>
@@ -397,18 +397,10 @@ export const CategorizeModal: React.FC<CategorizeModalProps> = ({
             </div>
           )}
 
-          {/* 增量事实沉淀 */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              追加沉淀到事实摘要 (可选)
-            </label>
-            <textarea
-              rows={2}
-              value={factDelta}
-              onChange={(e) => setFactDelta(e.target.value)}
-              placeholder="提取的事实将自动追加并融合到事项的核心事实中..."
-              className="w-full px-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-sky-500 resize-none"
-            />
+          {/* 自动提炼总结与建议 */}
+          <div className="p-2.5 rounded-xl bg-sky-50/60 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900/40 text-[11px] text-sky-700 dark:text-sky-300 flex items-center gap-2">
+            <span className="text-sm">✨</span>
+            <span>归集入库后，系统将自动汇总该事项的全部碎片日志，重新提炼生成最新的【事项总结】与【推进建议】。</span>
           </div>
 
           {/* 提取与生成待办 */}

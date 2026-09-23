@@ -237,7 +237,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 rows={3}
                 value={config.user_profile || ''}
                 onChange={(e) => setConfig({ ...config, user_profile: e.target.value })}
-                placeholder="例如：我是项目负责人兼质检主管，负责多语种与方言数据标注质检项目。常见对接人包括张总、Leo、陈伟豪、李工等。如遇涉及方言标注/质检相关内容请重点关注..."
+                placeholder="例如：我是项目交付负责人/产品经理，负责多部门协同与核心业务推进。主要对接人包括张总、王工、李会计等，请重点关注项目节点、商务约束与交付风险..."
                 className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-sky-500 resize-none leading-relaxed"
               />
               <p className="text-[11px] text-slate-400 mt-1">

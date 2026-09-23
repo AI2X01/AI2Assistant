@@ -380,6 +380,29 @@ impl Database {
         Ok(list)
     }
 
+    pub fn get_log_by_id(&self, log_id: &str) -> Result<Option<LogItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, matter_id, raw_content, source_app, source_window_title, created_at
+             FROM logs WHERE id = ?1 LIMIT 1"
+        )?;
+        let mut rows = stmt.query_map([log_id], |row| {
+            Ok(LogItem {
+                id: row.get(0)?,
+                matter_id: row.get(1)?,
+                raw_content: row.get(2)?,
+                source_app: row.get(3)?,
+                source_window_title: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+
+        if let Some(r) = rows.next() {
+            Ok(Some(r?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn create_log(&self, log: &LogItem) -> Result<()> {
         self.conn.execute(
             "INSERT INTO logs (id, matter_id, raw_content, source_app, source_window_title, created_at)
@@ -483,16 +506,15 @@ impl Database {
             params![matter_id, log_id],
         )?;
 
-        // 2. 增量事实合并
+        // 2. 增量事实合并（仅在无既有事实且delta简短时作为初始占位，避免破坏【事项总结与推进建议】结构）
         if let Some(delta) = facts_delta {
-            if !delta.trim().is_empty() {
+            let trimmed = delta.trim();
+            if !trimmed.is_empty() && trimmed.lines().count() <= 5 && trimmed.chars().count() <= 300 {
                 if let Ok(Some(mut matter)) = self.get_matter_by_id(matter_id) {
                     if matter.fact_summary.trim().is_empty() {
-                        matter.fact_summary = delta.to_string();
-                    } else {
-                        matter.fact_summary = format!("{}\n{}", matter.fact_summary, delta);
+                        matter.fact_summary = trimmed.to_string();
+                        let _ = self.update_matter(&matter);
                     }
-                    let _ = self.update_matter(&matter);
                 }
             }
         }
@@ -1067,9 +1089,9 @@ mod tests {
     fn test_todo_close_and_undo_lifecycle() {
         let db = setup_test_db();
         let matter = Matter {
-            id: "m_lang_11".to_string(),
-            title: "11国小语种质检与交付".to_string(),
-            overview: "多语种数据质检项目".to_string(),
+            id: "m_project_deliver".to_string(),
+            title: "核心系统二期交付上线".to_string(),
+            overview: "跨部门业务系统研发与上线项目".to_string(),
             fact_summary: "".to_string(),
             category: "work".to_string(),
             priority: "high".to_string(),
@@ -1089,12 +1111,12 @@ mod tests {
         };
         db.create_matter(&matter).unwrap();
 
-        // 创建原待办：南非荷兰语我只能自己上了，预计8点左右开始，10点结束
+        // 创建原待办：财务对账接口联调联试，预计8点左右开始，10点结束
         let todo = TodoItem {
-            id: "t_afrikaans".to_string(),
-            matter_id: "m_lang_11".to_string(),
+            id: "t_finance_api".to_string(),
+            matter_id: "m_project_deliver".to_string(),
             log_id: None,
-            content: "南非荷兰语我只能自己上了，预计8点左右开始，10点结束".to_string(),
+            content: "财务对账接口联调联试，预计8点左右开始，10点结束".to_string(),
             due_time: Some("2026-09-21 22:00:00".to_string()),
             reminder_time: None,
             is_reminder_sent: false,
@@ -1107,35 +1129,35 @@ mod tests {
         db.create_todo(&todo).unwrap();
 
         // 验证待办初始为 pending
-        let todos = db.get_todos_by_matter("m_lang_11").unwrap();
+        let todos = db.get_todos_by_matter("m_project_deliver").unwrap();
         assert_eq!(todos[0].status, "pending");
 
-        // 测试本地规则引擎识别：21:22 南非荷兰语已返修提交
+        // 测试本地规则引擎识别：21:22 财务对账接口已联调完成提交
         let matters_ctx = vec![crate::models::MatterContextWithTodos {
             matter: matter.clone(),
             pending_todos: vec![todos[0].clone()],
         }];
         let parse_res = crate::services::ai_service::AIService::local_fallback_parser(
             &matters_ctx,
-            "21:22 南非荷兰语已返修提交",
+            "21:22 财务对账接口已联调完成提交",
             "微信",
-            "11国小语种质检与交付",
+            "核心系统二期交付上线",
         );
 
         // 应识别出关闭待办建议
         assert!(!parse_res.todo_updates.is_empty(), "本地规则引擎应识别到待办可关闭");
-        assert_eq!(parse_res.todo_updates[0].todo_id, "t_afrikaans");
+        assert_eq!(parse_res.todo_updates[0].todo_id, "t_finance_api");
         assert_eq!(parse_res.todo_updates[0].action, "CLOSE");
 
         // 执行关闭
-        db.toggle_todo_status("t_afrikaans", true).unwrap();
-        let todos_after_close = db.get_todos_by_matter("m_lang_11").unwrap();
+        db.toggle_todo_status("t_finance_api", true).unwrap();
+        let todos_after_close = db.get_todos_by_matter("m_project_deliver").unwrap();
         assert_eq!(todos_after_close[0].status, "completed");
         assert!(todos_after_close[0].completed_at.is_some());
 
         // 执行撤销：恢复为 pending
-        db.toggle_todo_status("t_afrikaans", false).unwrap();
-        let todos_after_undo = db.get_todos_by_matter("m_lang_11").unwrap();
+        db.toggle_todo_status("t_finance_api", false).unwrap();
+        let todos_after_undo = db.get_todos_by_matter("m_project_deliver").unwrap();
         assert_eq!(todos_after_undo[0].status, "pending");
         assert!(todos_after_undo[0].completed_at.is_none());
     }

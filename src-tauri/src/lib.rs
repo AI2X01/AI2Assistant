@@ -161,6 +161,7 @@ pub fn run() {
             hide_hud_window,
             show_main_window,
             summarize_matter_facts,
+            extract_log_todos_and_summarize,
             enter_compact_mode,
             exit_compact_mode,
             compact_slide_in,

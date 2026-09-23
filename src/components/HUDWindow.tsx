@@ -32,6 +32,27 @@ function formatTargetTime(date: Date): string {
   return `${y}-${m}-${d} ${h}:${min}:${s}`;
 }
 
+function formatDueTimeLabel(dueTimeStr: string | null | undefined): string {
+  if (!dueTimeStr) return '';
+  try {
+    const target = new Date(dueTimeStr.replace(/-/g, '/'));
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const targetDay = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+    const diffDays = Math.round((targetDay.getTime() - today.getTime()) / (1000 * 3600 * 24));
+
+    const pad = (n: number) => (n < 10 ? '0' + n : String(n));
+    const timePart = `${pad(target.getHours())}:${pad(target.getMinutes())}`;
+
+    if (diffDays === 0) return `今天 ${timePart}`;
+    if (diffDays === 1) return `明天 ${timePart}`;
+    if (diffDays === 2) return `后天 ${timePart}`;
+    return `${pad(target.getMonth() + 1)}-${pad(target.getDate())} ${timePart}`;
+  } catch {
+    return dueTimeStr.slice(5, 16);
+  }
+}
+
 function getDefaultCustomTime(): string {
   const d = new Date(Date.now() + 15 * 60 * 1000);
   const pad = (n: number) => (n < 10 ? '0' + n : String(n));
@@ -1063,9 +1084,19 @@ export const HUDWindow: React.FC = () => {
                         </button>
                       </div>
                     ) : parseResult.extracted_todos.length > 0 ? (
-                      <span className="truncate text-slate-600 dark:text-slate-300">
-                        <Clock className="w-2.5 h-2.5 inline mr-1 text-sky-500" />
-                        待办: {parseResult.extracted_todos[0].content}
+                      <span className="truncate text-slate-700 dark:text-slate-200 font-medium flex items-center gap-1">
+                        <Clock className="w-2.5 h-2.5 inline shrink-0 text-amber-500 dark:text-amber-400" />
+                        {parseResult.extracted_todos[0].due_time && (
+                          <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-1 py-0.2 rounded shrink-0">
+                            {formatDueTimeLabel(parseResult.extracted_todos[0].due_time)}
+                          </span>
+                        )}
+                        <span className="truncate">待办: {parseResult.extracted_todos[0].content}</span>
+                        {parseResult.extracted_todos.length > 1 && (
+                          <span className="text-[9px] text-slate-400 shrink-0 font-normal">
+                            (+{parseResult.extracted_todos.length - 1}项)
+                          </span>
+                        )}
                       </span>
                     ) : (
                       <span className="truncate text-emerald-600 dark:text-emerald-400">

@@ -137,7 +137,7 @@ let mockConfig: AppConfig = {
   capture_shortcut: 'Alt+A',
   main_window_shortcut: 'Alt+Shift+Space',
   auto_archive_confidence: 0.8,
-  user_profile: '我是项目负责人兼质检主管，负责多语种与方言数据标注质检项目。常见团队与对接人包括张总、Leo、陈伟豪、李棠佳等。',
+  user_profile: '我是项目业务负责人兼团队协同协调人，负责核心业务落地与跨部门项目推进。常见团队与对接人包括张总、王经理、李组长等。',
   theme: 'system',
 };
 
@@ -597,6 +597,14 @@ export const api = {
     const facts = logs.map((l, i) => `• 事实纪要 ${i + 1}: ${l.raw_content}`).join('\n');
     matter.fact_summary = facts;
     return facts;
+  },
+
+  async extractLogTodosAndSummarize(matterId: string, logId: string): Promise<{ added_todos_count: number; new_fact_summary: string }> {
+    if (isTauri) {
+      return invoke('extract_log_todos_and_summarize', { matterId, logId });
+    }
+    const summary = await this.summarizeMatterFacts(matterId);
+    return { added_todos_count: 0, new_fact_summary: summary };
   },
 
   async hideHudWindow(): Promise<void> {

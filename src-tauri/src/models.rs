@@ -29,7 +29,7 @@ pub struct Matter {
     #[serde(default)]
     pub latest_todo_status: Option<String>,
     #[serde(default)]
-    pub related_contacts: String, // 关联人/群配置，如 "潮汕话标注群, 陈伟豪, 李总"
+    pub related_contacts: String, // 关联人/群配置，如 "项目推进群, 王经理, 张工"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,7 +105,7 @@ impl Default for AppConfig {
             capture_shortcut: "Alt+A".to_string(),
             main_window_shortcut: "Alt+Shift+Space".to_string(),
             auto_archive_confidence: 0.8,
-            user_profile: "我是项目负责人兼质检主管，负责多语种与方言数据标注质检项目。常见团队与对接人包括张总、Leo、陈伟豪、李棠佳等。".to_string(),
+            user_profile: "我是项目与事务推进负责人，日常负责跨部门协同、业务对接与任务交付。".to_string(),
             theme: "system".to_string(),
         }
     }
@@ -141,7 +141,7 @@ pub struct TodoUpdateSuggestion {
     pub todo_id: String,
     pub original_content: String,
     pub action: String, // "CLOSE" (完成/关闭) | "UPDATE" (更新文本/截止时间)
-    pub reason: String, // 判定理由，例如 "日志表明南非荷兰语已返修提交"
+    pub reason: String, // 判定理由，例如 "日志表明方案已定稿提交，任务已达成"
     #[serde(default)]
     pub updated_content: Option<String>,
     #[serde(default)]

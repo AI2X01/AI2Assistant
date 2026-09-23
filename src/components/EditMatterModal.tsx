@@ -276,14 +276,14 @@ export const EditMatterModal: React.FC<EditMatterModalProps> = ({
                 关联人 / 关联群聊配置
               </label>
               <span className="text-[10px] text-slate-400">
-                用逗号或空格隔开，如：潮汕话标注群, 陈伟豪
+                用逗号或空格隔开，如：项目交付群, 王经理
               </span>
             </div>
             <input
               type="text"
               value={relatedContacts}
               onChange={(e) => setRelatedContacts(e.target.value)}
-              placeholder="例如：潮汕话标注群, 陈伟豪, 李总, 业务对接组"
+              placeholder="例如：核心交付攻坚群, 张总, 王工, 业务对接组"
               className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-sky-500 transition-all"
             />
           </div>

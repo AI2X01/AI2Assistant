@@ -251,7 +251,7 @@ export const InboxBoard: React.FC<InboxBoardProps> = ({ onSelectMatter }) => {
                     </div>
 
                     {/* 窗口标题 */}
-                    {log.source_window_title && (
+                    {log.source_window_title && log.source_window_title !== log.source_app && (
                       <span className="text-[11px] text-slate-400 max-w-xs truncate" title={log.source_window_title}>
                         · {log.source_window_title}
                       </span>

@@ -21,7 +21,74 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 
+use tauri_plugin_notification::NotificationExt;
+
 pub type DbState = Arc<Mutex<Database>>;
+
+/// 发送新提取待办的系统桌面气泡通知提醒
+pub fn notify_new_todos(app: &AppHandle, matter_title: &str, todos: &[ExtractedTodo]) {
+    for todo in todos {
+        if !todo.content.trim().is_empty() {
+            let due_label = match &todo.due_time {
+                Some(dt) => {
+                    let cleaned = dt.replace(" 22:00:00", "").replace(" 18:00:00", "");
+                    format!(" (截止: {})", cleaned)
+                }
+                None => "".to_string(),
+            };
+            let title = format!("📌 待办提醒: 【{}】", matter_title);
+            let body = format!("{}{}", todo.content, due_label);
+            let _ = app.notification().builder()
+                .title(title)
+                .body(body)
+                .show();
+        }
+    }
+}
+
+/// 后台统一异步调用事项核心事实与建议提炼（保持与抽屉“重新提炼”100%一致）
+pub fn spawn_matter_facts_summarize(
+    app: AppHandle,
+    db: Arc<Mutex<Database>>,
+    matter_id: String,
+) {
+    tauri::async_runtime::spawn(async move {
+        println!("\n│ [后台自动提炼] 正在为事项 {} 重新提炼最新总结与建议...", matter_id);
+        let (config, matter, logs) = {
+            if let Ok(guard) = db.lock() {
+                let config = guard.get_config().unwrap_or_default();
+                let matter = match guard.get_matter_by_id(&matter_id) {
+                    Ok(Some(m)) => m,
+                    _ => return,
+                };
+                let logs = guard.get_logs_by_matter(&matter_id).unwrap_or_default();
+                (config, matter, logs)
+            } else {
+                return;
+            }
+        };
+
+        let summary = AIService::summarize_matter_facts(
+            &config,
+            &matter.title,
+            &matter.overview,
+            &matter.related_contacts,
+            &matter.fact_summary,
+            &logs,
+        )
+        .await;
+
+        if let Ok(guard) = db.lock() {
+            if let Ok(Some(mut current)) = guard.get_matter_by_id(&matter_id) {
+                current.fact_summary = summary;
+                let _ = guard.update_matter(&current);
+                println!("│ [后台自动提炼完成] 事项 【{}】 总结与建议已成功更新并广播", current.title);
+            }
+        }
+
+        let _ = app.emit("refresh-data", ());
+    });
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ConfirmRoutePayload {
@@ -244,7 +311,14 @@ pub fn categorize_inbox_log(
         }
     }
 
+    let matter_title = guard.get_matter_by_id(&target_matter_id).ok().flatten().map(|m| m.title).unwrap_or_else(|| "事项".to_string());
+    drop(guard);
+
     let _ = app.emit("refresh-data", ());
+
+    notify_new_todos(&app, &matter_title, &payload.new_todos);
+    spawn_matter_facts_summarize(app.clone(), db.inner().clone(), target_matter_id);
+
     Ok(())
 }
 
@@ -560,6 +634,13 @@ pub async fn process_captured_context_internal(
 
             // 自动归集入库与待办变更完成，立即广播全局数据刷新！
             let _ = app.emit("refresh-data", ());
+
+            // 输出待办提醒桌面通知
+            let target_title = result.matched_matter_title.as_deref().unwrap_or("进行中事项");
+            notify_new_todos(app, target_title, &result.extracted_todos);
+
+            // 保持与抽屉“重新提炼”统一调用：在后台统一异步重提炼该事项的总结与推进建议
+            spawn_matter_facts_summarize(app.clone(), db.inner().clone(), mid.clone());
         }
     } else if result.action == "MATCH_EXISTING" {
         println!("│ [提示] 虽判定 MATCH_EXISTING 但置信度 {:.2} 低于自动沉淀阈值 {:.2}，等待用户在 HUD 确认", result.confidence, config.auto_archive_confidence);
@@ -712,7 +793,17 @@ pub fn confirm_route_decision(
         }
     }
 
+    let matter_title = guard.get_matter_by_id(&target_matter_id).ok().flatten().map(|m| m.title).unwrap_or_else(|| "事项".to_string());
+    drop(guard);
+
     let _ = app.emit("refresh-data", ());
+
+    // 输出待办提醒桌面通知
+    notify_new_todos(&app, &matter_title, &payload.extracted_todos);
+
+    // 保持与抽屉“重新提炼”统一调用：在后台统一异步重提炼该事项的总结与推进建议
+    spawn_matter_facts_summarize(app.clone(), db.inner().clone(), target_matter_id);
+
     Ok(())
 }
 
@@ -817,6 +908,134 @@ pub async fn summarize_matter_facts(
     }
 
     Ok(summary)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExtractLogResult {
+    pub added_todos_count: usize,
+    pub new_fact_summary: String,
+}
+
+#[tauri::command]
+pub async fn extract_log_todos_and_summarize(
+    app: AppHandle,
+    db: State<'_, DbState>,
+    matter_id: String,
+    log_id: String,
+) -> Result<ExtractLogResult, String> {
+    println!("\n╔══════════════════════════════════════════════════════════════════════╗");
+    println!("║       【AI2Assistant】单条归集日志智能提炼待办与更新总结建议         ║");
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!("│ 事项 ID: {}, 日志 ID: {}", matter_id, log_id);
+
+    let (config, matter, target_log, existing_todos, logs) = {
+        let guard = db.lock().map_err(|e| e.to_string())?;
+        let config = guard.get_config().map_err(|e| e.to_string())?;
+        let matter = guard
+            .get_matter_by_id(&matter_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "未找到指定事项".to_string())?;
+        let target_log = guard
+            .get_log_by_id(&log_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "未找到指定日志".to_string())?;
+        let existing_todos = guard.get_todos_by_matter(&matter_id).unwrap_or_default();
+        let logs = guard.get_logs_by_matter(&matter_id).unwrap_or_default();
+        (config, matter, target_log, existing_todos, logs)
+    };
+
+    // 1. 抽取待办项：使用专属于当前事项的上下文调用大模型语义分析
+    let pending_todos: Vec<TodoItem> = existing_todos
+        .iter()
+        .filter(|t| t.status == "pending")
+        .cloned()
+        .collect();
+
+    let single_matter_ctx = vec![MatterContextWithTodos {
+        matter: matter.clone(),
+        pending_todos,
+    }];
+
+    let parsed = AIService::parse_and_route(
+        &config,
+        &single_matter_ctx,
+        &target_log.raw_content,
+        &target_log.source_app,
+        &target_log.source_window_title,
+    )
+    .await;
+
+    let mut added_todos: Vec<ExtractedTodo> = Vec::new();
+    for todo in parsed.extracted_todos {
+        let content_trimmed = todo.content.trim();
+        // 过滤超长长文本（防止整篇日志被误作为待办）和已有重复待办
+        if content_trimmed.is_empty() || content_trimmed.chars().count() > 180 {
+            continue;
+        }
+        let exists = existing_todos.iter().any(|t| t.content.trim() == content_trimmed);
+        if !exists {
+            added_todos.push(ExtractedTodo {
+                content: content_trimmed.to_string(),
+                due_time: todo.due_time,
+            });
+        }
+    }
+
+    // 将合法有效的新待办持久化存入数据库
+    if !added_todos.is_empty() {
+        let guard = db.lock().map_err(|e| e.to_string())?;
+        for t in &added_todos {
+            let new_todo = TodoItem {
+                id: Uuid::new_v4().to_string(),
+                matter_id: matter_id.clone(),
+                log_id: Some(log_id.clone()),
+                content: t.content.clone(),
+                due_time: t.due_time.clone(),
+                reminder_time: t.due_time.clone(),
+                is_reminder_sent: false,
+                status: "pending".to_string(),
+                is_focused: false,
+                created_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                completed_at: None,
+                matter_title: Some(matter.title.clone()),
+            };
+            let _ = guard.create_todo(&new_todo);
+        }
+        println!("│ [待办提取] 为事项 【{}】 成功录入 {} 条新待办", matter.title, added_todos.len());
+        // 弹出 Windows 桌面系统原生待办提醒通知
+        notify_new_todos(&app, &matter.title, &added_todos);
+    } else {
+        println!("│ [待办提取] 该条日志未发现新的明确待办行动项（已防止长文本被粗暴转为待办）");
+    }
+
+    // 2. 重新提炼事项整体的【事项总结与推进建议】（与抽屉“重新提炼”完全一致）
+    let summary = AIService::summarize_matter_facts(
+        &config,
+        &matter.title,
+        &matter.overview,
+        &matter.related_contacts,
+        &matter.fact_summary,
+        &logs,
+    )
+    .await;
+
+    // 持久化更新事项的总结与推进建议
+    {
+        let guard = db.lock().map_err(|e| e.to_string())?;
+        if let Ok(Some(mut current)) = guard.get_matter_by_id(&matter_id) {
+            current.fact_summary = summary.clone();
+            let _ = guard.update_matter(&current);
+            println!("│ [总结提炼] 事项 【{}】 的总结与建议已成功更新", current.title);
+        }
+    }
+
+    println!("╚══════════════════════════════════════════════════════════════════════╝\n");
+    let _ = app.emit("refresh-data", ());
+
+    Ok(ExtractLogResult {
+        added_todos_count: added_todos.len(),
+        new_fact_summary: summary,
+    })
 }
 
 // ==================== 缩略模式与贴边停靠/抽拉动画 ====================

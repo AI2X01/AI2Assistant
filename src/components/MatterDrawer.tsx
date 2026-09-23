@@ -215,67 +215,28 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
     }
   };
 
-  // 从日志中智能抽取出待办与事实
+  // 从单条归集日志中智能提炼待办与更新总结建议（与“重新提炼”保持完全统一）
   const handleExtractTodosAndFacts = async (log: LogItem) => {
     setExtractingLogId(log.id);
     try {
-      // 1. 调用 AI 语义分析抽取具体待办与事实增量
-      const parsed = await api.manualParseText(
-        log.raw_content,
-        log.source_app,
-        log.source_window_title
-      );
+      // 统一调用后端服务：抽取有效行动项为待办，并全面重新提炼【事项总结与推进建议】
+      const result = await api.extractLogTodosAndSummarize(currentMatter.id, log.id);
 
-      // 2. 录入抽取出的待办
-      if (parsed.extracted_todos && parsed.extracted_todos.length > 0) {
-        for (const todo of parsed.extracted_todos) {
-          await api.createTodo({
-            matterId: currentMatter.id,
-            content: todo.content,
-            dueTime: todo.due_time,
-            logId: log.id,
-          });
-        }
-      } else {
-        // 规则兜底：若未匹配到特定行动项，将本条日志作为待办保留
-        await api.createTodo({
-          matterId: currentMatter.id,
-          content: log.raw_content,
-          logId: log.id,
-        });
-      }
-
-      // 3. 若抽取出事实增量，自动融入当前事项的核心事实摘要中
-      if (parsed.extracted_facts_delta && parsed.extracted_facts_delta.trim()) {
-        const delta = parsed.extracted_facts_delta.trim();
-        const existingSummary = currentMatter.fact_summary || '';
-        let mergedSummary = existingSummary;
-        if (!existingSummary.includes(delta)) {
-          mergedSummary = existingSummary
-            ? `${existingSummary}\n\n• ${delta.replace(/^[•\-\*]\s*/, '')}`
-            : delta;
-        }
-        const updated = { ...currentMatter, fact_summary: mergedSummary };
-        await api.updateMatter(updated);
-        setCurrentMatter(updated);
-        setFactDraft(mergedSummary);
+      if (result.new_fact_summary) {
+        setFactDraft(result.new_fact_summary);
+        setCurrentMatter((prev) => ({ ...prev, fact_summary: result.new_fact_summary }));
       }
 
       await loadDetails(currentMatter.id);
       onRefreshMatters();
 
-      // 4. 抽取完成后自动切到待办清单，供用户即时检查
-      setActiveTab('todos');
-    } catch (e) {
-      console.error('抽取待办与事实失败，执行兜底创建待办', e);
-      await api.createTodo({
-        matterId: currentMatter.id,
-        content: log.raw_content,
-        logId: log.id,
-      });
-      await loadDetails(currentMatter.id);
-      onRefreshMatters();
-      setActiveTab('todos');
+      // 若成功识别并提取出新待办，自动切换至待办清单 Tab 供用户即时检查
+      if (result.added_todos_count > 0) {
+        setActiveTab('todos');
+      }
+    } catch (e: any) {
+      console.error('提炼待办与更新总结建议失败:', e);
+      alert(`提炼失败: ${e?.message || e || '请检查网络或模型配置'}`);
     } finally {
       setExtractingLogId(null);
     }
@@ -778,7 +739,7 @@ export const MatterDrawer: React.FC<MatterDrawerProps> = ({
                       <div className="bg-slate-50 dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 hover:border-sky-300 dark:hover:border-sky-800 transition-all">
                         <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2">
                           <span className="font-semibold text-sky-600 dark:text-sky-400">
-                            来自: {log.source_app} {log.source_window_title ? `· ${log.source_window_title}` : ''}
+                            来自: {log.source_app} {log.source_window_title && log.source_window_title !== log.source_app ? `· ${log.source_window_title}` : ''}
                           </span>
                           <span>{log.created_at}</span>
                         </div>

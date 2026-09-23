@@ -191,7 +191,7 @@ export const NewMatterModal: React.FC<NewMatterModalProps> = ({
               type="text"
               value={relatedContacts}
               onChange={(e) => setRelatedContacts(e.target.value)}
-              placeholder="例如：潮汕话标注群, 陈伟豪, 李总, 硬件组"
+              placeholder="例如：核心交付攻坚群, 张总, 王工, 供应链对接"
               className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-sky-500 focus:bg-white"
             />
             <p className="text-[10px] text-slate-400 mt-1">

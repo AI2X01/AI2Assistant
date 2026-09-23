@@ -19,6 +19,8 @@ import {
 import { InboxLogItem, Matter } from '../types';
 import { api } from '../services/api';
 import { CategorizeModal } from './CategorizeModal';
+import { ConfirmModal } from './ConfirmModal';
+import { listen } from '@tauri-apps/api/event';
 
 interface InboxBoardProps {
   onSelectMatter: (matter: Matter) => void;
@@ -35,8 +37,31 @@ export const InboxBoard: React.FC<InboxBoardProps> = ({ onSelectMatter }) => {
   // 归集弹窗控制
   const [selectedLogForCategorize, setSelectedLogForCategorize] = useState<InboxLogItem | null>(null);
 
+  // 删除二次确认弹窗控制
+  const [logToDelete, setLogToDelete] = useState<InboxLogItem | null>(null);
+  const [isDeletingLog, setIsDeletingLog] = useState(false);
+
   useEffect(() => {
     loadData();
+  }, []);
+
+  // 监听后端全局数据更新广播
+  useEffect(() => {
+    const unlisten = listen('refresh-data', () => {
+      loadData();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 窗口重新获取焦点时静默对齐最新收件箱数据
+  useEffect(() => {
+    const handleFocus = () => {
+      loadData();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
   }, []);
 
   const loadData = async () => {
@@ -55,11 +80,22 @@ export const InboxBoard: React.FC<InboxBoardProps> = ({ onSelectMatter }) => {
     }
   };
 
-  const handleDeleteLog = async (id: string, e: React.MouseEvent) => {
+  const handleRequestDeleteLog = (log: InboxLogItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('确定要从收件箱删除此条收集文本吗？')) {
-      await api.deleteLog(id);
-      loadData();
+    setLogToDelete(log);
+  };
+
+  const handleConfirmDeleteLog = async () => {
+    if (!logToDelete) return;
+    setIsDeletingLog(true);
+    try {
+      await api.deleteLog(logToDelete.id);
+      setLogToDelete(null);
+      await loadData();
+    } catch (e) {
+      console.error('删除收件箱记录失败', e);
+    } finally {
+      setIsDeletingLog(false);
     }
   };
 
@@ -268,8 +304,8 @@ export const InboxBoard: React.FC<InboxBoardProps> = ({ onSelectMatter }) => {
 
                     {/* 删除日志 */}
                     <button
-                      onClick={(e) => handleDeleteLog(log.id, e)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-all"
+                      onClick={(e) => handleRequestDeleteLog(log, e)}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-all cursor-pointer"
                       title="删除此条记录"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -327,6 +363,30 @@ export const InboxBoard: React.FC<InboxBoardProps> = ({ onSelectMatter }) => {
         onClose={() => setSelectedLogForCategorize(null)}
         onSuccess={loadData}
         matters={matters}
+      />
+
+      {/* 收件箱记录删除二次确认弹窗 */}
+      <ConfirmModal
+        isOpen={Boolean(logToDelete)}
+        title="确认删除该条收集记录？"
+        description={
+          logToDelete ? (
+            <div className="space-y-2 text-xs leading-relaxed">
+              <div className="text-slate-700 dark:text-slate-200 line-clamp-3 bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-200/60 dark:border-slate-700/60 font-mono text-[11px]">
+                "{logToDelete.raw_content}"
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                ⚠️ 删除后该条碎片文本将从收件箱彻底移除，不可撤回。
+              </p>
+            </div>
+          ) : null
+        }
+        confirmText="确认删除"
+        cancelText="取消"
+        danger={true}
+        isLoading={isDeletingLog}
+        onClose={() => setLogToDelete(null)}
+        onConfirm={handleConfirmDeleteLog}
       />
     </div>
   );

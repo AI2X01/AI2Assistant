@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { InboxLogItem, Matter, ExtractedTodo, CategoryType, PriorityType, TodoUpdateSuggestion } from '../types';
 import { api } from '../services/api';
+import { emit } from '@tauri-apps/api/event';
 
 interface CategorizeModalProps {
   log: InboxLogItem | null;
@@ -170,6 +171,7 @@ export const CategorizeModal: React.FC<CategorizeModalProps> = ({
         todo_updates: confirmedUpdates,
       });
 
+      await emit('refresh-data');
       onSuccess();
       onClose();
     } catch (err: any) {

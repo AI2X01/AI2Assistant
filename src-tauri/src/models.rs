@@ -179,3 +179,28 @@ pub struct CategorizePayload {
     #[serde(default)]
     pub todo_updates: Vec<TodoUpdateSuggestion>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UncategorizePayload {
+    pub log_id: String,
+    pub matter_id: Option<String>,
+    pub facts_delta: Option<String>,
+    #[serde(default)]
+    pub todo_updates: Vec<TodoUpdateSuggestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecategorizePayload {
+    pub log_id: String,
+    pub old_matter_id: Option<String>,
+    pub old_facts_delta: Option<String>,
+    #[serde(default)]
+    pub old_todo_updates: Vec<TodoUpdateSuggestion>,
+    pub choice: String, // "EXISTING" | "CREATE_NEW"
+    pub new_matter_id: Option<String>,
+    pub new_matter: Option<SuggestedMatter>,
+    pub new_facts_delta: Option<String>,
+    #[serde(default)]
+    pub new_todos: Vec<ExtractedTodo>,
+}
+

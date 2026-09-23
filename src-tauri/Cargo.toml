@@ -38,6 +38,10 @@ features = [
     "Win32_UI_Accessibility",
     "Win32_System_Com",
     "Win32_System_Ole",
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Win32_Graphics_Gdi",
 ]
 
 [profile.release]

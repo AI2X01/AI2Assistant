@@ -24,7 +24,7 @@ function getInitialWindowLabel(): string {
     if (label) return label;
     const appWin = getCurrentWebviewWindow();
     if (appWin && appWin.label) return appWin.label;
-  } catch {}
+  } catch { }
   return 'main';
 }
 
@@ -40,7 +40,7 @@ export function App() {
       if (cfg?.theme) {
         setThemeMode(cfg.theme as ThemeMode, false);
       }
-    }).catch(() => {});
+    }).catch(() => { });
 
     try {
       const appWin = getCurrentWebviewWindow();
@@ -83,6 +83,11 @@ function MainWindow() {
   const [sortBy, setSortBy] = useState<string>('updated');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  const filtersRef = React.useRef({ statusFilter, categoryFilter, sortBy });
+  useEffect(() => {
+    filtersRef.current = { statusFilter, categoryFilter, sortBy };
+  }, [statusFilter, categoryFilter, sortBy]);
+
   // 弹窗状态
   const [isNewMatterOpen, setIsNewMatterOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -117,16 +122,55 @@ function MainWindow() {
     const unlisten = listen('refresh-data', () => {
       loadMatters();
       loadUncategorizedCount();
-      showToast('✓ AI 划选捕获已同步更新！');
+      //showToast('✓ AI 划选捕获已同步更新！');
     });
     return () => {
       unlisten.then((fn) => fn());
     };
   }, []);
 
+  // 监听来自 HUD 或外部请求打开特定事项详情的事件
+  useEffect(() => {
+    const unlistenOpen = listen<{ matterId: string }>('open-matter-detail', async (event) => {
+      const matterId = event.payload?.matterId;
+      if (!matterId) return;
+
+      // 如果处于桌面缩略微窗模式，立刻退出缩略模式恢复主看板
+      if (isCompactMode) {
+        await handleExitCompact();
+      }
+
+      // 切换到事项主看板并加载目标事项
+      setCurrentTab('matters');
+      try {
+        const targetMatter = await api.getMatterById(matterId);
+        if (targetMatter) {
+          setSelectedMatter(targetMatter);
+        }
+      } catch (err) {
+        console.error('打开对应事项详情失败', err);
+      }
+    });
+
+    return () => {
+      unlistenOpen.then((fn) => fn());
+    };
+  }, [isCompactMode]);
+
+  // 窗口重新获取焦点时静默刷新事项列表与未归集数
+  useEffect(() => {
+    const handleFocus = () => {
+      loadMatters();
+      loadUncategorizedCount();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
   const loadMatters = async () => {
     try {
-      const list = await api.getMatters(statusFilter, categoryFilter, sortBy);
+      const { statusFilter: sf, categoryFilter: cf, sortBy: sb } = filtersRef.current;
+      const list = await api.getMatters(sf, cf, sb);
       setMatters(list);
     } catch (e) {
       console.error('加载事项列表失败', e);
@@ -224,11 +268,10 @@ function MainWindow() {
                   <button
                     key={st.value}
                     onClick={() => setStatusFilter(st.value)}
-                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
-                      statusFilter === st.value
-                        ? 'bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-800/60'
-                        : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-300'
-                    }`}
+                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${statusFilter === st.value
+                      ? 'bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border border-sky-200 dark:border-sky-800/60'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-300'
+                      }`}
                   >
                     {st.label}
                   </button>

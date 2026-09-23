@@ -171,6 +171,8 @@ pub fn run() {
             set_compact_busy,
             start_dragging_window,
             undo_todo_update,
+            uncategorize_log,
+            recategorize_log,
             resize_hud_window,
             is_autostart_enabled,
             set_autostart

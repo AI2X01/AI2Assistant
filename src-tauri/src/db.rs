@@ -525,6 +525,49 @@ impl Database {
         Ok(())
     }
 
+    pub fn uncategorize_log(
+        &self,
+        log_id: &str,
+        matter_id: Option<&str>,
+        facts_delta: Option<&str>,
+    ) -> Result<()> {
+        // 1. 日志恢复未归集 (matter_id 设为 NULL)
+        self.conn.execute(
+            "UPDATE logs SET matter_id = NULL WHERE id = ?1",
+            params![log_id],
+        )?;
+
+        // 2. 删除由该日志在该事项中生成的待办项 (通过 log_id 关联)
+        self.conn.execute(
+            "DELETE FROM todos WHERE log_id = ?1",
+            params![log_id],
+        )?;
+
+        // 3. 剔除追加到事项中的增量事实摘要
+        if let (Some(mid), Some(delta)) = (matter_id, facts_delta) {
+            let delta_trimmed = delta.trim();
+            if !delta_trimmed.is_empty() {
+                if let Ok(Some(mut matter)) = self.get_matter_by_id(mid) {
+                    let mut summary = matter.fact_summary.clone();
+                    if summary.contains(delta_trimmed) {
+                        summary = summary.replace(&format!("\n{}", delta_trimmed), "");
+                        summary = summary.replace(&format!("{}\n", delta_trimmed), "");
+                        summary = summary.replace(delta_trimmed, "");
+                        matter.fact_summary = summary.trim().to_string();
+                        let _ = self.update_matter(&matter);
+                    }
+                }
+            }
+        }
+
+        // 4. 更新事项的更新时间（若提供了事项ID）
+        if let Some(mid) = matter_id {
+            let _ = self.touch_matter_updated(mid);
+        }
+
+        Ok(())
+    }
+
     pub fn delete_log(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM logs WHERE id = ?1", params![id])?;
         Ok(())

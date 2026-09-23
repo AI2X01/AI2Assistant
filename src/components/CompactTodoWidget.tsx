@@ -19,6 +19,7 @@ import { TodoItem, Matter, CompactDockState } from '../types';
 import { api } from '../services/api';
 import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { ConfirmModal } from './ConfirmModal';
 
 interface CompactTodoWidgetProps {
   onExpand: () => void;
@@ -32,6 +33,8 @@ export const CompactTodoWidget: React.FC<CompactTodoWidgetProps> = ({ onExpand }
   const [newContent, setNewContent] = useState('');
   const [matters, setMatters] = useState<Matter[]>([]);
   const [selectedMatterId, setSelectedMatterId] = useState<string>('');
+  const [todoToDelete, setTodoToDelete] = useState<TodoItem | null>(null);
+  const [isDeletingTodo, setIsDeletingTodo] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // 贴边停靠与自动抽拉状态
@@ -75,13 +78,14 @@ export const CompactTodoWidget: React.FC<CompactTodoWidgetProps> = ({ onExpand }
     };
   }, [filter]);
 
-  // 展开输入框时自动聚焦并告知后端处于忙碌态（防止自动收缩）
+  // 展开输入框或开启删除确认弹窗时，告知后端处于忙碌态（防止自动收缩）
   useEffect(() => {
     if (isAdding) {
       inputRef.current?.focus();
     }
-    api.setCompactBusy(isAdding).catch(console.warn);
-  }, [isAdding]);
+    const isBusy = isAdding || !!todoToDelete;
+    api.setCompactBusy(isBusy).catch(console.warn);
+  }, [isAdding, todoToDelete]);
 
   // 鼠标移入：触碰到露出的边框把手或展开窗体，立即滑出
   const handleMouseEnter = async () => {
@@ -99,9 +103,9 @@ export const CompactTodoWidget: React.FC<CompactTodoWidgetProps> = ({ onExpand }
     }
   };
 
-  // 鼠标移出：若贴边且未锁定、未在添加输入，防抖 450ms 后平滑收缩
+  // 鼠标移出：若贴边且未锁定、未在添加输入或二次确认中，防抖 450ms 后平滑收缩
   const handleMouseLeave = () => {
-    if (dockState.edge === 'none' || dockState.is_locked || isAdding) {
+    if (dockState.edge === 'none' || dockState.is_locked || isAdding || !!todoToDelete) {
       return;
     }
     if (leaveTimerRef.current) {
@@ -186,10 +190,19 @@ export const CompactTodoWidget: React.FC<CompactTodoWidgetProps> = ({ onExpand }
     loadData();
   };
 
-  const handleDeleteTodo = async (id: string) => {
-    await api.deleteTodo(id);
-    await emit('refresh-data');
-    loadData();
+  const handleConfirmDeleteTodo = async () => {
+    if (!todoToDelete) return;
+    setIsDeletingTodo(true);
+    try {
+      await api.deleteTodo(todoToDelete.id);
+      setTodoToDelete(null);
+      await emit('refresh-data');
+      loadData();
+    } catch (e) {
+      console.error('删除待办失败', e);
+    } finally {
+      setIsDeletingTodo(false);
+    }
   };
 
   const handleCreateTodo = async (e: React.FormEvent) => {
@@ -484,7 +497,7 @@ export const CompactTodoWidget: React.FC<CompactTodoWidgetProps> = ({ onExpand }
                     <Bookmark className="w-3.5 h-3.5" />
                   </button>
                   <button
-                    onClick={() => handleDeleteTodo(todo.id)}
+                    onClick={() => setTodoToDelete(todo)}
                     className="p-1 rounded-md text-slate-300 dark:text-slate-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-colors cursor-pointer"
                     title="删除待办"
                   >
@@ -525,6 +538,23 @@ export const CompactTodoWidget: React.FC<CompactTodoWidgetProps> = ({ onExpand }
           <span>恢复看板</span>
         </button>
       </div>
+
+      {/* 删除待办二次确认弹窗 */}
+      <ConfirmModal
+        isOpen={!!todoToDelete}
+        title="确认删除该待办？"
+        description={
+          todoToDelete
+            ? `即将删除待办「${todoToDelete.content}」。删除后无法恢复，确定继续吗？`
+            : ''
+        }
+        confirmText="确认删除"
+        cancelText="取消"
+        isDanger={true}
+        isLoading={isDeletingTodo}
+        onClose={() => setTodoToDelete(null)}
+        onConfirm={handleConfirmDeleteTodo}
+      />
     </div>
   );
 };

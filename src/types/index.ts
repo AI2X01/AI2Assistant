@@ -145,6 +145,26 @@ export interface CategorizePayload {
   todo_updates?: TodoUpdateSuggestion[];
 }
 
+export interface UncategorizePayload {
+  log_id: string;
+  matter_id?: string;
+  facts_delta?: string;
+  todo_updates?: TodoUpdateSuggestion[];
+}
+
+export interface RecategorizePayload {
+  log_id: string;
+  old_matter_id?: string;
+  old_facts_delta?: string;
+  old_todo_updates?: TodoUpdateSuggestion[];
+  choice: 'EXISTING' | 'CREATE_NEW';
+  new_matter_id?: string;
+  new_matter?: SuggestedMatter;
+  new_facts_delta?: string;
+  new_todos: ExtractedTodo[];
+}
+
+
 export type CompactDockEdge = 'none' | 'top' | 'left' | 'right';
 
 export interface CompactDockState {

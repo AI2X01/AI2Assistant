@@ -8,6 +8,8 @@ import {
   AIParseResult,
   ConfirmRoutePayload,
   CategorizePayload,
+  UncategorizePayload,
+  RecategorizePayload,
   CapturedContext,
   CompactDockState,
 } from '../types';
@@ -332,6 +334,37 @@ export const api = {
         });
       }
     }
+  },
+
+  async uncategorizeLog(payload: UncategorizePayload): Promise<void> {
+    if (isTauri) {
+      return invoke('uncategorize_log', { payload });
+    }
+    const log = mockLogs.find((l) => l.id === payload.log_id);
+    if (log) {
+      log.matter_id = undefined;
+    }
+    mockTodos = mockTodos.filter((t) => t.log_id !== payload.log_id);
+  },
+
+  async recategorizeLog(payload: RecategorizePayload): Promise<void> {
+    if (isTauri) {
+      return invoke('recategorize_log', { payload });
+    }
+    await this.uncategorizeLog({
+      log_id: payload.log_id,
+      matter_id: payload.old_matter_id,
+      facts_delta: payload.old_facts_delta,
+      todo_updates: payload.old_todo_updates,
+    });
+    await this.categorizeInboxLog({
+      log_id: payload.log_id,
+      choice: payload.choice,
+      matter_id: payload.new_matter_id,
+      new_matter: payload.new_matter,
+      extracted_facts_delta: payload.new_facts_delta,
+      new_todos: payload.new_todos,
+    });
   },
 
   // 待办

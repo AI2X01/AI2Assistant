@@ -1,7 +1,8 @@
 use crate::db::Database;
 use crate::models::{
     AIParseResult, AppConfig, CategorizePayload, ExtractedTodo, InboxLogItem, LogItem, Matter,
-    MatterContextWithTodos, SuggestedMatter, TodoItem, TodoUpdateSuggestion,
+    MatterContextWithTodos, RecategorizePayload, SuggestedMatter, TodoItem, TodoUpdateSuggestion,
+    UncategorizePayload,
 };
 use crate::services::ai_service::AIService;
 use crate::services::clipboard_service::ClipboardService;
@@ -60,6 +61,7 @@ pub fn get_matter_by_id(db: State<DbState>, id: String) -> Result<Option<Matter>
 
 #[tauri::command]
 pub fn create_matter(
+    app: AppHandle,
     db: State<DbState>,
     title: String,
     overview: Option<String>,
@@ -93,33 +95,42 @@ pub fn create_matter(
         related_contacts: related_contacts.unwrap_or_default(),
     };
     guard.create_matter(&matter).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
     Ok(matter)
 }
 
 #[tauri::command]
-pub fn update_matter(db: State<DbState>, matter: Matter) -> Result<(), String> {
+pub fn update_matter(app: AppHandle, db: State<DbState>, matter: Matter) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.update_matter(&matter).map_err(|e| e.to_string())
+    guard.update_matter(&matter).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn update_matter_status(db: State<DbState>, id: String, status: String) -> Result<(), String> {
+pub fn update_matter_status(app: AppHandle, db: State<DbState>, id: String, status: String) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
     guard
         .update_matter_status(&id, &status)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn toggle_matter_pinned(db: State<DbState>, id: String) -> Result<bool, String> {
+pub fn toggle_matter_pinned(app: AppHandle, db: State<DbState>, id: String) -> Result<bool, String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.toggle_matter_pinned(&id).map_err(|e| e.to_string())
+    let res = guard.toggle_matter_pinned(&id).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(res)
 }
 
 #[tauri::command]
-pub fn delete_matter(db: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_matter(app: AppHandle, db: State<DbState>, id: String) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.delete_matter(&id).map_err(|e| e.to_string())
+    guard.delete_matter(&id).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 // ==================== 日志 Commands ====================
@@ -132,6 +143,7 @@ pub fn get_logs_by_matter(db: State<DbState>, matter_id: String) -> Result<Vec<L
 
 #[tauri::command]
 pub fn create_log(
+    app: AppHandle,
     db: State<DbState>,
     matter_id: Option<String>,
     raw_content: String,
@@ -149,13 +161,16 @@ pub fn create_log(
         created_at: now,
     };
     guard.create_log(&log).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
     Ok(log)
 }
 
 #[tauri::command]
-pub fn delete_log(db: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_log(app: AppHandle, db: State<DbState>, id: String) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.delete_log(&id).map_err(|e| e.to_string())
+    guard.delete_log(&id).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 // ==================== AI 收件箱 Commands ====================
@@ -168,6 +183,7 @@ pub fn get_inbox_logs(db: State<DbState>) -> Result<Vec<InboxLogItem>, String> {
 
 #[tauri::command]
 pub fn categorize_inbox_log(
+    app: AppHandle,
     db: State<DbState>,
     payload: CategorizePayload,
 ) -> Result<(), String> {
@@ -228,8 +244,120 @@ pub fn categorize_inbox_log(
         }
     }
 
+    let _ = app.emit("refresh-data", ());
     Ok(())
 }
+
+#[tauri::command]
+pub fn uncategorize_log(
+    app: AppHandle,
+    db: State<DbState>,
+    payload: UncategorizePayload,
+) -> Result<(), String> {
+    let guard = db.lock().map_err(|e| e.to_string())?;
+
+    // 1. 调用 db 的撤销归集方法
+    guard.uncategorize_log(
+        &payload.log_id,
+        payload.matter_id.as_deref(),
+        payload.facts_delta.as_deref(),
+    ).map_err(|e| e.to_string())?;
+
+    // 2. 还原受影响的已有待办状态
+    for update in &payload.todo_updates {
+        if update.action == "CLOSE" {
+            let _ = guard.toggle_todo_status(&update.todo_id, false);
+            println!("│ [撤销归集] 恢复已核销待办: {} (ID: {})", update.original_content, update.todo_id);
+        } else if update.action == "UPDATE" {
+            let _ = guard.update_todo(
+                &update.todo_id,
+                &update.original_content,
+                None,
+                None,
+            );
+            println!("│ [撤销归集] 还原待办内容: {} (ID: {})", update.original_content, update.todo_id);
+        }
+    }
+
+    let _ = app.emit("refresh-data", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn recategorize_log(
+    app: AppHandle,
+    db: State<DbState>,
+    payload: RecategorizePayload,
+) -> Result<(), String> {
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    // 1. 清理原事项关联、待办与事实
+    guard.uncategorize_log(
+        &payload.log_id,
+        payload.old_matter_id.as_deref(),
+        payload.old_facts_delta.as_deref(),
+    ).map_err(|e| e.to_string())?;
+
+    // 还原原事项受影响的已有待办
+    for update in &payload.old_todo_updates {
+        if update.action == "CLOSE" {
+            let _ = guard.toggle_todo_status(&update.todo_id, false);
+        } else if update.action == "UPDATE" {
+            let _ = guard.update_todo(
+                &update.todo_id,
+                &update.original_content,
+                None,
+                None,
+            );
+        }
+    }
+
+    // 2. 确定新目标事项ID
+    let target_matter_id = match payload.choice.as_str() {
+        "EXISTING" => payload.new_matter_id.ok_or_else(|| "未指定目标事项ID".to_string())?,
+        "CREATE_NEW" => {
+            let suggested = payload.new_matter.ok_or_else(|| "未提供新建事项信息".to_string())?;
+            let new_id = Uuid::new_v4().to_string();
+            let new_matter = Matter {
+                id: new_id.clone(),
+                title: suggested.title,
+                overview: suggested.summary,
+                fact_summary: payload.new_facts_delta.clone().unwrap_or_default(),
+                category: suggested.category,
+                priority: suggested.priority,
+                importance: 3,
+                status: "active".to_string(),
+                is_pinned: false,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                pending_todos_count: 0,
+                total_todos_count: 0,
+                latest_log_snippet: None,
+                latest_log_time: None,
+                latest_todo_content: None,
+                latest_todo_due_time: None,
+                latest_todo_status: None,
+                related_contacts: suggested.related_contacts.unwrap_or_default(),
+            };
+            guard.create_matter(&new_matter).map_err(|e| e.to_string())?;
+            new_id
+        }
+        _ => return Err("未知的调整选项".to_string()),
+    };
+
+    // 3. 归集到新事项
+    guard.categorize_log(
+        &payload.log_id,
+        &target_matter_id,
+        payload.new_facts_delta.as_deref(),
+        &payload.new_todos,
+    ).map_err(|e| e.to_string())?;
+
+    let _ = app.emit("refresh-data", ());
+    Ok(())
+}
+
 
 // ==================== 待办 Commands ====================
 
@@ -247,6 +375,7 @@ pub fn get_all_todos(db: State<DbState>, status_filter: Option<String>) -> Resul
 
 #[tauri::command]
 pub fn create_todo(
+    app: AppHandle,
     db: State<DbState>,
     matter_id: String,
     content: String,
@@ -271,33 +400,42 @@ pub fn create_todo(
         matter_title: None,
     };
     guard.create_todo(&todo).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
     Ok(todo)
 }
 
 #[tauri::command]
-pub fn toggle_todo_status(db: State<DbState>, id: String, completed: bool) -> Result<(), String> {
+pub fn toggle_todo_status(app: AppHandle, db: State<DbState>, id: String, completed: bool) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.toggle_todo_status(&id, completed).map_err(|e| e.to_string())
+    guard.toggle_todo_status(&id, completed).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn toggle_todo_focus(db: State<DbState>, id: String) -> Result<bool, String> {
+pub fn toggle_todo_focus(app: AppHandle, db: State<DbState>, id: String) -> Result<bool, String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.toggle_todo_focus(&id).map_err(|e| e.to_string())
+    let res = guard.toggle_todo_focus(&id).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(res)
 }
 
 #[tauri::command]
 pub fn update_todo_reminder(
+    app: AppHandle,
     db: State<DbState>,
     id: String,
     reminder_time: Option<String>,
 ) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.update_todo_reminder(&id, reminder_time).map_err(|e| e.to_string())
+    guard.update_todo_reminder(&id, reminder_time).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 #[tauri::command]
 pub fn update_todo(
+    app: AppHandle,
     db: State<DbState>,
     id: String,
     content: String,
@@ -305,13 +443,17 @@ pub fn update_todo(
     reminder_time: Option<String>,
 ) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.update_todo(&id, &content, due_time, reminder_time).map_err(|e| e.to_string())
+    guard.update_todo(&id, &content, due_time, reminder_time).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn delete_todo(db: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_todo(app: AppHandle, db: State<DbState>, id: String) -> Result<(), String> {
     let guard = db.lock().map_err(|e| e.to_string())?;
-    guard.delete_todo(&id).map_err(|e| e.to_string())
+    guard.delete_todo(&id).map_err(|e| e.to_string())?;
+    let _ = app.emit("refresh-data", ());
+    Ok(())
 }
 
 // ==================== 配置 Commands ====================
@@ -335,6 +477,7 @@ pub fn save_app_config(app: AppHandle, db: State<DbState>, config: AppConfig) ->
 // ==================== 核心：划选抓取与 AI 智能意图路由 ====================
 
 pub async fn process_captured_context_internal(
+    app: &AppHandle,
     db: &State<'_, DbState>,
     captured: &crate::services::clipboard_service::CapturedContext,
 ) -> Result<AIParseResult, String> {
@@ -354,6 +497,8 @@ pub async fn process_captured_context_internal(
         };
         let _ = guard.create_log(&log);
     }
+    // 通知收件箱与未归集数字角标有新内容
+    let _ = app.emit("refresh-data", ());
 
     // 2. 读取当前活跃事项与配置，并附带未完成待办
     let (config, active_matters) = {
@@ -412,6 +557,9 @@ pub async fn process_captured_context_internal(
                     println!("│ [自动更新待办] 已修改待办: {} (ID: {})", update.original_content, update.todo_id);
                 }
             }
+
+            // 自动归集入库与待办变更完成，立即广播全局数据刷新！
+            let _ = app.emit("refresh-data", ());
         }
     } else if result.action == "MATCH_EXISTING" {
         println!("│ [提示] 虽判定 MATCH_EXISTING 但置信度 {:.2} 低于自动沉淀阈值 {:.2}，等待用户在 HUD 确认", result.confidence, config.auto_archive_confidence);
@@ -422,20 +570,21 @@ pub async fn process_captured_context_internal(
 
 #[tauri::command]
 pub async fn process_captured_context(
+    app: AppHandle,
     db: State<'_, DbState>,
     captured: crate::services::clipboard_service::CapturedContext,
 ) -> Result<AIParseResult, String> {
-    process_captured_context_internal(&db, &captured).await
+    process_captured_context_internal(&app, &db, &captured).await
 }
 
 #[tauri::command]
 pub async fn trigger_capture_and_analyze(
-    _app: AppHandle,
+    app: AppHandle,
     db: State<'_, DbState>,
 ) -> Result<AIParseResult, String> {
     // 安全抓取前台选中文本与窗口元数据
     let captured = ClipboardService::capture_selected_text_safe().await?;
-    process_captured_context_internal(&db, &captured).await
+    process_captured_context_internal(&app, &db, &captured).await
 }
 
 #[tauri::command]
@@ -477,6 +626,7 @@ pub async fn manual_parse_text(
 
 #[tauri::command]
 pub fn confirm_route_decision(
+    app: AppHandle,
     db: State<DbState>,
     payload: ConfirmRoutePayload,
 ) -> Result<(), String> {
@@ -562,11 +712,13 @@ pub fn confirm_route_decision(
         }
     }
 
+    let _ = app.emit("refresh-data", ());
     Ok(())
 }
 
 #[tauri::command]
 pub fn undo_todo_update(
+    app: AppHandle,
     db: State<DbState>,
     todo_id: String,
     action: String,
@@ -583,6 +735,7 @@ pub fn undo_todo_update(
             println!("│ [撤销待办操作] 已还原待办内容/时间: {}", todo_id);
         }
     }
+    let _ = app.emit("refresh-data", ());
     Ok(())
 }
 

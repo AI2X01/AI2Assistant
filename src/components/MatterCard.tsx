@@ -11,9 +11,12 @@ import {
   Edit3,
   CheckSquare,
   ListTodo,
+  Trash2,
 } from 'lucide-react';
 import { Matter } from '../types';
+import { api } from '../services/api';
 import { EditMatterModal } from './EditMatterModal';
+import { ConfirmModal } from './ConfirmModal';
 
 interface MatterCardProps {
   matter: Matter;
@@ -31,6 +34,22 @@ export const MatterCard: React.FC<MatterCardProps> = ({
   onRefresh,
 }) => {
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleConfirmDelete = async () => {
+    setIsDeleting(true);
+    try {
+      await api.deleteMatter(matter.id);
+      setIsDeleteConfirmOpen(false);
+      if (onRefresh) onRefresh();
+    } catch (err) {
+      console.error('删除事项失败', err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const isWork = matter.category === 'work';
   const isArchived = matter.status === 'archived';
   const isCompleted = matter.status === 'completed';
@@ -141,7 +160,7 @@ export const MatterCard: React.FC<MatterCardProps> = ({
           </div>
         )}
 
-        {/* 1. 核心事实沉淀 */}
+        {/* 1. 总结与建议 */}
         {matter.fact_summary ? (
           <div className="mb-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800/80 text-slate-600 dark:text-slate-300 text-xs leading-relaxed line-clamp-3 whitespace-pre-line font-normal">
             {matter.fact_summary}
@@ -152,7 +171,7 @@ export const MatterCard: React.FC<MatterCardProps> = ({
           </p>
         ) : (
           <div className="text-[11px] text-slate-400 italic mb-2.5 p-2 rounded-lg bg-slate-50/50 dark:bg-slate-800/20 border border-dashed border-slate-100 dark:border-slate-800/60">
-            • 暂无核心事实沉淀
+            • 暂无总结与建议
           </div>
         )}
 
@@ -197,14 +216,26 @@ export const MatterCard: React.FC<MatterCardProps> = ({
         {/* 快捷操作 */}
         <div className="flex items-center gap-1">
           {isArchived ? (
-            <button
-              onClick={(e) => onUpdateStatus(matter.id, 'active', e)}
-              className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40 rounded-md transition-all"
-              title="重新激活到进行中"
-            >
-              <RotateCcw className="w-3 h-3" />
-              激活
-            </button>
+            <>
+              <button
+                onClick={(e) => onUpdateStatus(matter.id, 'active', e)}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40 rounded-md transition-all"
+                title="重新激活到进行中"
+              >
+                <RotateCcw className="w-3 h-3" />
+                激活
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsDeleteConfirmOpen(true);
+                }}
+                className="p-1 text-[11px] text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded transition-all"
+                title="彻底删除事项"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -223,6 +254,16 @@ export const MatterCard: React.FC<MatterCardProps> = ({
               >
                 <Archive className="w-3.5 h-3.5" />
               </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsDeleteConfirmOpen(true);
+                }}
+                className="p-1 text-[11px] text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded transition-all"
+                title="彻底删除事项"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
             </>
           )}
 
@@ -240,6 +281,34 @@ export const MatterCard: React.FC<MatterCardProps> = ({
         onSuccess={() => {
           if (onRefresh) onRefresh();
         }}
+        onDelete={() => {
+          if (onRefresh) onRefresh();
+        }}
+      />
+
+      {/* 事项删除二次确认弹窗 */}
+      <ConfirmModal
+        isOpen={isDeleteConfirmOpen}
+        title={`确认删除事项「${matter.title}」？`}
+        description={
+          <div className="space-y-1.5 text-xs leading-relaxed">
+            <p className="text-slate-700 dark:text-slate-200">
+              即将彻底删除事项<span className="font-semibold text-rose-600 dark:text-rose-400">「{matter.title}」</span>。
+            </p>
+            <p className="text-slate-500 dark:text-slate-400">
+              ⚠️ 该事项下的所有待办任务与总结建议将被清理。
+            </p>
+            <p className="text-slate-400 text-[11px]">
+              历史关联的原始碎片日志将安全保留并退回【待归接收件箱】。此操作不可撤销，确定删除吗？
+            </p>
+          </div>
+        }
+        confirmText="确认删除"
+        cancelText="取消"
+        danger={true}
+        isLoading={isDeleting}
+        onClose={() => setIsDeleteConfirmOpen(false)}
+        onConfirm={handleConfirmDelete}
       />
     </div>
   );

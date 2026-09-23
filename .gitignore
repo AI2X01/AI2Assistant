@@ -25,3 +25,18 @@ src-tauri/target*/
 *.njsproj
 *.sln
 *.sw?
+
+# SQLite 本地数据库文件 (关键防护：防止开发测试产生的 db 被意外提交)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 环境变量与敏感凭据
+.env
+.env.*
+!.env.example
+
+# 本地 AI 辅助配置
+.claude/local/

@@ -13,6 +13,7 @@ import {
 import { TodoItem, Matter } from '../types';
 import { api } from '../services/api';
 import { listen } from '@tauri-apps/api/event';
+import { ConfirmModal } from './ConfirmModal';
 
 interface TodoBoardProps {
   onSelectMatter: (matter: Matter) => void;
@@ -28,6 +29,15 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({ onSelectMatter }) => {
   const [editTodoContent, setEditTodoContent] = useState('');
   const [editTodoDue, setEditTodoDue] = useState('');
 
+  // 待办删除二次确认状态
+  const [todoToDelete, setTodoToDelete] = useState<TodoItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const filterRef = React.useRef(filter);
+  useEffect(() => {
+    filterRef.current = filter;
+  }, [filter]);
+
   useEffect(() => {
     loadTodos();
   }, [filter]);
@@ -40,12 +50,21 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({ onSelectMatter }) => {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [filter]);
+  }, []);
+
+  // 窗口重新获取焦点时静默刷新待办列表
+  useEffect(() => {
+    const handleFocus = () => {
+      loadTodos();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
 
   const loadTodos = async () => {
     setLoading(true);
     try {
-      const list = await api.getAllTodos(filter);
+      const list = await api.getAllTodos(filterRef.current);
       setTodos(list);
     } finally {
       setLoading(false);
@@ -104,15 +123,29 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({ onSelectMatter }) => {
     }
   };
 
-  const handleDeleteTodo = async (id: string) => {
+  // 请求删除待办（触发二次确认）
+  const handleRequestDeleteTodo = (id: string) => {
+    const t = todos.find((item) => item.id === id);
+    if (t) {
+      setTodoToDelete(t);
+    }
+  };
+
+  // 执行确认删除待办
+  const handleConfirmDeleteTodo = async () => {
+    if (!todoToDelete) return;
+    setIsDeleting(true);
     try {
-      await api.deleteTodo(id);
-      if (editingTodoId === id) {
+      await api.deleteTodo(todoToDelete.id);
+      if (editingTodoId === todoToDelete.id) {
         handleCancelEditTodo();
       }
+      setTodoToDelete(null);
       await loadTodos();
     } catch (e) {
       console.error('删除待办失败', e);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -201,7 +234,7 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({ onSelectMatter }) => {
                 onStartEdit={handleStartEditTodo}
                 onCancelEdit={handleCancelEditTodo}
                 onSaveEdit={handleSaveEditTodo}
-                onDelete={handleDeleteTodo}
+                onDelete={handleRequestDeleteTodo}
                 onChangeContent={setEditTodoContent}
                 onChangeDue={setEditTodoDue}
               />
@@ -273,6 +306,29 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({ onSelectMatter }) => {
           </div>
         )}
       </div>
+
+      {/* 待办删除二次确认对话框 */}
+      <ConfirmModal
+        isOpen={!!todoToDelete}
+        title="确认删除该待办事项？"
+        description={
+          todoToDelete ? (
+            <div className="space-y-1">
+              <div className="text-slate-700 dark:text-slate-200">
+                待办内容：<span className="font-semibold text-rose-600 dark:text-rose-400">「{todoToDelete.content}」</span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                删除后将从当前清单中永久移除，不可撤回。
+              </p>
+            </div>
+          ) : null
+        }
+        confirmText="确认删除"
+        danger={true}
+        isLoading={isDeleting}
+        onConfirm={handleConfirmDeleteTodo}
+        onClose={() => setTodoToDelete(null)}
+      />
     </div>
   );
 
@@ -293,7 +349,7 @@ export const TodoBoard: React.FC<TodoBoardProps> = ({ onSelectMatter }) => {
             onStartEdit={handleStartEditTodo}
             onCancelEdit={handleCancelEditTodo}
             onSaveEdit={handleSaveEditTodo}
-            onDelete={handleDeleteTodo}
+            onDelete={handleRequestDeleteTodo}
             onChangeContent={setEditTodoContent}
             onChangeDue={setEditTodoDue}
           />

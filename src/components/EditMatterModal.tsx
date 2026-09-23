@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Edit3, Briefcase, Heart, Star, Check } from 'lucide-react';
+import { X, Edit3, Briefcase, Heart, Star, Check, Trash2 } from 'lucide-react';
 import { Matter, CategoryType, PriorityType, StatusType } from '../types';
 import { api } from '../services/api';
+import { ConfirmModal } from './ConfirmModal';
 
 interface EditMatterModalProps {
   matter: Matter | null;
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (updatedMatter: Matter) => void;
+  onDelete?: (deletedId: string) => void;
 }
 
 export const EditMatterModal: React.FC<EditMatterModalProps> = ({
@@ -15,6 +17,7 @@ export const EditMatterModal: React.FC<EditMatterModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
+  onDelete,
 }) => {
   if (!isOpen || !matter) return null;
 
@@ -28,6 +31,8 @@ export const EditMatterModal: React.FC<EditMatterModalProps> = ({
   const [status, setStatus] = useState<StatusType>(matter.status || 'active');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (matter) {
@@ -72,6 +77,23 @@ export const EditMatterModal: React.FC<EditMatterModalProps> = ({
       setError(err?.message || '保存事项修改失败，请重试');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    setIsDeleting(true);
+    try {
+      await api.deleteMatter(matter.id);
+      setShowDeleteConfirm(false);
+      if (onDelete) {
+        onDelete(matter.id);
+      }
+      onClose();
+    } catch (err: any) {
+      console.error('删除事项失败', err);
+      setError(err?.message || '删除事项失败，请重试');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -278,40 +300,67 @@ export const EditMatterModal: React.FC<EditMatterModalProps> = ({
             />
           </div>
 
-          {/* 核心事实沉淀 */}
+          {/* 总结与建议 */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              核心事实沉淀 (关键约束、商务、共识)
+              总结与建议 (言简意赅总结现状、持续推进建议)
             </label>
             <textarea
-              rows={4}
+              rows={5}
               value={factSummary}
               onChange={(e) => setFactSummary(e.target.value)}
-              placeholder="• 商务约束: ...&#10;• 关键共识: ...&#10;• 交付时间: ..."
+              placeholder="【事项总结】&#10;• 核心进展: ...&#10;• 关键指标: ...&#10;&#10;【推进建议】&#10;• 推进动作: ...&#10;• 风险防范: ..."
               className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-sky-500 transition-all resize-none leading-relaxed"
             />
           </div>
 
           {/* 底部动作 */}
-          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white rounded-xl shadow-sm shadow-sky-600/20 active:scale-95 transition-all"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>{loading ? '保存中...' : '保存修改'}</span>
-            </button>
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+            <div>
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl transition-all cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>删除事项</span>
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white rounded-xl shadow-sm shadow-sky-600/20 active:scale-95 transition-all cursor-pointer"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{loading ? '保存中...' : '保存修改'}</span>
+              </button>
+            </div>
           </div>
         </form>
       </div>
+
+      {/* 删除事项二次确认弹窗 */}
+      <ConfirmModal
+        isOpen={showDeleteConfirm}
+        title="确认删除该事项？"
+        description={`即将删除事项「${matter.title}」。该事项下的所有待办任务与总结与建议将被清理，关联的历史碎片日志将安全保留并退回待归接收件箱。此操作不可撤销，确定删除吗？`}
+        confirmText="确认删除"
+        cancelText="取消"
+        danger={true}
+        isLoading={isDeleting}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   );
 };

@@ -809,7 +809,7 @@ impl AIService {
         };
 
         let system_prompt = format!(
-            r#"你是一个高度严谨的个人事务整理助手。
+            r#"你是一个高度严谨、富有前瞻洞察的个人事务高级顾问与整理助手。
 当前时间: {now}
 
 【用户个人情况 / 关注视角】：
@@ -818,27 +818,38 @@ impl AIService {
 【事项关联人/群配置】：
 {matter_related_contacts}
 
-你的任务是：根据事项标题、当前背景、关联人/群及相关碎片日志，全面梳理、去粗取精，提炼出条理清晰、简短有力的【核心事实沉淀】。
+你的任务是：根据事项标题、当前背景、关联人/群及该事项下的全部碎片日志，全面梳理分析，输出条理清晰、言简意赅的【总结与建议】。
 
-提炼维度应涵盖：
-• 商务与财务约束（如有金额、报价、合同、结算）
-• 进度共识与重要节点（如截止时间、交付节点、里程碑）
-• 核心技术/业务参数与硬性要求（如指标、规格、约束、通过率）
-• 关键对接人与分工（如客户、负责人、跟进人）
-• 当前最新结论与阻塞点
+必须且仅能严格分为以下两部分输出：
 
-要求：
-1. 请输出结构清晰的 Markdown 要点列表（每项以 "• " 开头，例如 "• 进度共识: ..."、"• 技术指标: ..."）。
-2. 合并重复信息，过滤闲聊客套，提炼最具业务价值的事实依据。
-3. 直接输出提炼好的事实要点正文，不要有任何多余的开场白、说明或总结陈词。
-4. 语言精炼准确。"#,
+【事项总结】
+- 根据识别的日志进行言简意赅的总结。
+- 归纳总结当前事项的核心推进现状、最新关键决定与共识、关键商务/财务要求（如结算数据量、单价预算、周期等）、以及硬性指标参数。
+- 语言高度精炼，逻辑紧密，去除一切客套闲聊，每条以 "• " 开头。
+
+【推进建议】
+- 根据整体日志对当前事项的推进全貌，提出针对性、前瞻性、切实可行的专业建议（持续更新）。
+- 重点包含：下一步应优先推动的关键动作、潜在风险点预警与规避方案（如AI代标风险、交付延期风险、双方口径不一致等）、以及催办与协同对齐要点。
+- 每条以 "• " 开头，观点明确、指引清晰。
+
+格式要求：
+1. 必须严格包含【事项总结】和【推进建议】两个段落大纲，示例：
+【事项总结】
+• 进展与共识: 明确当前阶段与最新共识...
+• 关键指标: 明确量化数据、商务要求等...
+
+【推进建议】
+• 推进动作: 下一步应落实的核心行动...
+• 风险防范: 需重点核验与关注的潜在问题...
+
+2. 严禁输出任何开场白、前言、解释说明或结束语，直接输出正文。"#,
             now = now,
             user_profile_desc = user_profile_desc,
             matter_related_contacts = if matter_related_contacts.trim().is_empty() { "无" } else { matter_related_contacts }
         );
 
         let user_content = format!(
-            "事项标题: {}\n事项背景/概述: {}\n关联人/群: {}\n已沉淀事实参考: {}\n\n相关碎片日志列表:\n{}",
+            "事项标题: {}\n事项背景/概述: {}\n关联人/群: {}\n参考现有内容: {}\n\n相关碎片日志列表:\n{}",
             matter_title,
             matter_overview,
             if matter_related_contacts.trim().is_empty() { "未配置" } else { matter_related_contacts },
@@ -900,15 +911,24 @@ impl AIService {
         existing_facts: &str,
         logs: &[crate::models::LogItem],
     ) -> String {
-        let mut fact_lines: Vec<String> = Vec::new();
+        let mut summary_lines: Vec<String> = Vec::new();
+        let mut suggestion_lines: Vec<String> = Vec::new();
 
-        // 1. 保留原有事实中的有效条目
+        // 1. 保留原有有效条目并分类
         for line in existing_facts.lines() {
             let trimmed = line.trim();
-            if !trimmed.is_empty() && !trimmed.contains("暂无") {
-                if !fact_lines.contains(&trimmed.to_string()) {
-                    fact_lines.push(trimmed.to_string());
+            if trimmed.is_empty() || trimmed.contains("暂无") {
+                continue;
+            }
+            if trimmed.contains("【事项总结】") || trimmed.contains("【推进建议】") {
+                continue;
+            }
+            if trimmed.contains("建议") || trimmed.contains("风险") || trimmed.contains("需关注") || trimmed.contains("防范") {
+                if !suggestion_lines.contains(&trimmed.to_string()) {
+                    suggestion_lines.push(trimmed.to_string());
                 }
+            } else if !summary_lines.contains(&trimmed.to_string()) {
+                summary_lines.push(trimmed.to_string());
             }
         }
 
@@ -947,31 +967,34 @@ impl AIService {
 
                 if is_key_info {
                     let formatted = format!("• 关键纪要: {}", s);
-                    if !fact_lines.contains(&formatted) {
-                        fact_lines.push(formatted);
+                    if !summary_lines.contains(&formatted) {
+                        summary_lines.push(formatted);
                     }
                 }
             }
-
-            if sentences.len() <= 2 && text.chars().count() <= 60 {
-                let formatted = format!("• 重点记录: {}", text);
-                if !fact_lines.iter().any(|f| f.contains(text)) {
-                    fact_lines.push(formatted);
-                }
-            }
         }
 
-        if fact_lines.is_empty() {
+        if summary_lines.is_empty() {
             for log in logs.iter().take(3) {
                 let snippet: String = log.raw_content.chars().take(50).collect();
-                fact_lines.push(format!("• 日志事实 ({}): {}", log.created_at, snippet));
+                summary_lines.push(format!("• 进展记录 ({}): {}", log.created_at, snippet));
             }
         }
 
-        if fact_lines.is_empty() {
-            format!("• 【{}】目前共记录 {} 条日志，暂无特殊约束与硬性事实。", matter_title, logs.len())
-        } else {
-            fact_lines.join("\n")
+        // 3. 基于日志与状态生成前瞻推进建议（持续更新）
+        if suggestion_lines.is_empty() {
+            suggestion_lines.push("• 进度跟进: 建议关注本事项最新关键节点，及时与核心对接人锁定交付/核对明细。".to_string());
+            suggestion_lines.push("• 风险防范: 建议对关键指标与交付物进行抽样核查，防范质量偏差或口径不一致风险。".to_string());
         }
+
+        format!(
+            "【事项总结】\n{}\n\n【推进建议】\n{}",
+            if summary_lines.is_empty() {
+                format!("• 【{}】当前记录了 {} 条日志，整体进展顺利。", matter_title, logs.len())
+            } else {
+                summary_lines.join("\n")
+            },
+            suggestion_lines.join("\n")
+        )
     }
 }

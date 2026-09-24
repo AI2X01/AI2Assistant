@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Sparkles,
   CheckCircle2,
@@ -82,15 +82,22 @@ export const HUDWindow: React.FC = () => {
 
   const currentReminder = reminderTodos[0];
 
-  // 动态同步物理窗口尺寸：极简胶囊 (capsule: 360x76) vs 决策/调整面板 (expanded: 380x240) vs 待办提醒 (reminder: 380x260)
+  // 动态同步物理窗口尺寸：极简胶囊 (capsule: 380x80) vs 决策/调整面板 (expanded: 400x250) vs 待办提醒 (reminder: 400x270)
   // 保持低干扰设计原则：仅当用户主动点击“手动归集/调整”或存在“多候选事项歧义待单选”时才展开面板，未匹配事项默认以极简微胶囊展示
+  const prevModeRef = useRef<string>('');
   useEffect(() => {
+    let mode: 'reminder' | 'expanded' | 'capsule' = 'capsule';
     if (currentReminder) {
-      api.resizeHudWindow('reminder');
+      mode = 'reminder';
     } else if (isReRouting || parseResult?.action === 'AMBIGUOUS') {
-      api.resizeHudWindow('expanded');
+      mode = 'expanded';
     } else {
-      api.resizeHudWindow('capsule');
+      mode = 'capsule';
+    }
+
+    if (prevModeRef.current !== mode) {
+      prevModeRef.current = mode;
+      api.resizeHudWindow(mode).catch(() => {});
     }
   }, [currentReminder, parseResult, isReRouting]);
 
@@ -209,31 +216,16 @@ export const HUDWindow: React.FC = () => {
     return () => clearTimeout(timer);
   }, [countdown, isHovered, currentReminder, isReRouting]);
 
-  // 空闲防卡死兜底：如果没有任何内容且未在 loading，2秒后自动销毁关闭
+  // 空闲防卡死兜底：如果没有任何内容且未在 loading，300ms 后自动静默收起
   useEffect(() => {
     if (currentReminder || isReRouting) return;
     if (!loading && !parseResult && !errorMessage) {
       const idleTimer = setTimeout(() => {
         handleClose();
-      }, 2000);
+      }, 300);
       return () => clearTimeout(idleTimer);
     }
   }, [loading, parseResult, errorMessage, currentReminder, isReRouting]);
-
-  // 窗口失焦时平滑自动关闭（用户在其他程序点击，无感收起）
-  useEffect(() => {
-    const handleBlur = () => {
-      if (currentReminder || isReRouting) return; // 有待办提醒或调整归集中失焦不自动关闭
-      if (!isHovered) {
-        setTimeout(() => {
-          handleClose();
-        }, 1200);
-      }
-    };
-
-    window.addEventListener('blur', handleBlur);
-    return () => window.removeEventListener('blur', handleBlur);
-  }, [isHovered, currentReminder, isReRouting]);
 
   // 待办操作：知道了（置为完成）
   const handleAcknowledge = async (todo: TodoItem) => {
@@ -318,8 +310,8 @@ export const HUDWindow: React.FC = () => {
       setParseResult(res);
 
       if (res.action === 'MATCH_EXISTING' && res.matched_matter_id) {
-        // 极简胶囊成功态：若有待办关闭更新给4秒，普通沉淀2秒极速淡出，最大限度不打扰
-        setCountdown(res.todo_updates && res.todo_updates.length > 0 ? 4 : 2);
+        // 极简胶囊成功态：给予 6 秒充足时间展示归集结果与快捷操作（悬停自动暂停）
+        setCountdown(6);
         await emit('refresh-data');
       } else {
         // 未匹配到事项，给用户 6 秒时间提示并支持下拉手动归集或新建（悬停时自动暂停倒计时）
@@ -329,7 +321,7 @@ export const HUDWindow: React.FC = () => {
       console.warn('解析失败', e);
       const msg = typeof e === 'string' ? e : e?.message || '解析失败，请重试';
       setErrorMessage(msg);
-      setCountdown(2);
+      setCountdown(3);
     } finally {
       setLoading(false);
     }
@@ -345,7 +337,7 @@ export const HUDWindow: React.FC = () => {
       setParseResult(res);
 
       if (res.action === 'MATCH_EXISTING' && res.matched_matter_id) {
-        setCountdown(res.todo_updates && res.todo_updates.length > 0 ? 4 : 2);
+        setCountdown(6);
         await emit('refresh-data');
       } else {
         setCountdown(6);
@@ -583,7 +575,6 @@ export const HUDWindow: React.FC = () => {
     setIsReRouting(false);
     setIsCreatingNewMode(false);
     setActionFeedback(null);
-    api.resizeHudWindow('capsule');
     await api.hideHudWindow();
   };
 
@@ -1032,7 +1023,7 @@ export const HUDWindow: React.FC = () => {
                       已归集至{' '}
                       <button
                         onClick={() => handleJumpToMatter()}
-                        className="inline-flex items-center gap-0.5 text-sky-600 dark:text-sky-400 font-extrabold hover:underline hover:text-sky-500 dark:hover:text-sky-300 transition-colors cursor-pointer group/jump max-w-[130px] truncate"
+                        className="inline-flex items-center gap-0.5 text-sky-600 dark:text-sky-400 font-extrabold hover:underline hover:text-sky-500 dark:hover:text-sky-300 transition-colors cursor-pointer group/jump max-w-[155px] truncate"
                         title="点击在主看板查看该事项详情"
                       >
                         <span className="truncate">【{parseResult.matched_matter_title}】</span>
@@ -1205,19 +1196,6 @@ export const HUDWindow: React.FC = () => {
                 </div>
               </div>
             )
-          )}
-
-          {/* 4. 等待就绪兜底 */}
-          {!loading && !errorMessage && !parseResult && (
-            <div className="w-full flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 rounded-full border-2 border-sky-400/40 border-t-sky-500 animate-spin shrink-0" />
-                <span className="text-xs text-slate-500">正在感知上下文...</span>
-              </div>
-              <button onClick={handleClose} className="p-1 text-slate-400">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
           )}
         </div>
       )}

@@ -34,8 +34,9 @@ pub fn run() {
             let db_state = Arc::new(Mutex::new(database));
             app.manage(db_state.clone());
 
-            // 2. 配置 HUD 窗口初始位置在右下角（精准避开任务栏并兼容 DPI 缩放）
+            // 2. 配置 HUD 窗口初始位置在右下角（保持静默隐藏）
             if let Some(hud_win) = app.get_webview_window("hud") {
+                let _ = hud_win.hide();
                 shortcuts::position_hud_window_bottom_right(&hud_win);
             }
 

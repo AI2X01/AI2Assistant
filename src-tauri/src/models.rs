@@ -165,6 +165,8 @@ pub struct AIParseResult {
     pub source_window: String,
     #[serde(default)]
     pub log_id: Option<String>,
+    #[serde(default)]
+    pub detected_chat_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,3 +40,6 @@ src-tauri/target*/
 
 # 本地 AI 辅助配置
 .claude/local/
+
+# 临时测试图片
+*.bmp

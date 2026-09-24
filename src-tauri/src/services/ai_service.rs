@@ -16,12 +16,18 @@ impl AIService {
         snippet: &str,
         source_app: &str,
         source_window: &str,
+        image_base64: Option<&str>,
     ) -> AIParseResult {
         println!("\n╔══════════════════════════════════════════════════════════════════════╗");
         println!("║               【AI2Assistant】事件归集与语义意图感知                 ║");
         println!("╠══════════════════════════════════════════════════════════════════════╣");
         println!("│ 来源应用: {}", source_app);
         println!("│ 来源会话/群聊: {}", source_window);
+        if let Some(img) = image_base64 {
+            println!("│ 随附多模态应用截图: 是 (大小: {} 字符 Base64)", img.len());
+        } else {
+            println!("│ 随附多模态应用截图: 否");
+        }
         let profile_summary: String = if config.user_profile.trim().is_empty() {
             "未配置个人情况".to_string()
         } else {
@@ -68,7 +74,16 @@ impl AIService {
             return Self::local_fallback_parser(active_matters, snippet, source_app, source_window);
         }
 
-        match Self::call_llm_api(config, active_matters, snippet, source_app, source_window).await {
+        match Self::call_llm_api(
+            config,
+            active_matters,
+            snippet,
+            source_app,
+            source_window,
+            image_base64,
+        )
+        .await
+        {
             Ok(result) => {
                 println!(
                     "╚══════════════════════════════════════════════════════════════════════╝\n"
@@ -92,6 +107,7 @@ impl AIService {
         snippet: &str,
         source_app: &str,
         source_window: &str,
+        image_base64: Option<&str>,
     ) -> Result<AIParseResult, String> {
         let client = Client::builder()
             .timeout(StdDuration::from_secs(60))
@@ -141,6 +157,7 @@ impl AIService {
 {{
   "action": "MATCH_EXISTING" | "AMBIGUOUS" | "CREATE_NEW" | "IGNORE",
   "confidence": 0.0到1.0的浮点数,
+  "detected_chat_target": "若随附了微信/企微等聊天窗口截图，请从截图顶部标题栏提取出真实完整的会话或群聊名称；若无截图或无法看清则填写推断的会话名称或原窗口名",
   "matched_matter_id": "明确归属于某个进行中事项时填写其ID，否则为 null",
   "candidate_matters": [
     {{ "id": "事项ID", "title": "事项标题", "confidence": 0.65 }}
@@ -190,7 +207,12 @@ impl AIService {
      - 新日志：“16:40 对账单明细已核对无误，发给财务李会计了”
      - 决策：这说明该项待办已完成落实！必须在 todo_updates 中生成 action 为 "CLOSE" 的项，包含该 todo_id，并将 reason 设为“日志表明已完成对账并同步财务，该任务已达成”。
    - 如果新文本表明某待办被顺延、推迟或修改了执行要求，生成 action 为 "UPDATE" 的项，更新其 updated_content 或 updated_due_time。
-   - 如果没有需要关闭或更新的现有待办，todo_updates 返回空数组 []。"#,
+   - 如果没有需要关闭或更新的现有待办，todo_updates 返回空数组 []。
+4. 视觉多模态窗口截图与会话名称识别（最高优先级）：
+   - 如果本请求中附带了应用窗口截图，请仔细辨析该截图顶部（标题栏区域）显示的会话名称/群聊名称。
+   - 提取完整名称（包括可能包含的组织部门后缀如'@财务部'，或长群名、双行副标题，注意看清真实汉字，不要臆造或看错形近字）。
+   - 将识别出的真实名称填入 "detected_chat_target" 字段。
+   - 【联动判定】：将识别到的群名/联系人与进行中各事项配置的【关联人/群 (related_contacts)】及事项名称进行深度比对；若命中，必须强判定为 MATCH_EXISTING，并将置信度 confidence 设为 0.90 以上！"#,
             current_time_str = current_time_str,
             user_profile_desc = user_profile_desc
         );
@@ -209,18 +231,44 @@ impl AIService {
 
         println!("│ [LLM 请求] 发送至: {} (模型: {})", url, config.model_name);
 
-        let body = json!({
-            "model": config.model_name,
-            "messages": [
-                { "role": "system", "content": system_prompt },
-                { "role": "user", "content": user_content.to_string() }
-            ],
-            "response_format": { "type": "json_object" },
-            "temperature": 0.2
-        });
+        let make_request_body = |include_image: bool| {
+            let user_content_val = if include_image && image_base64.is_some() {
+                let img_b64 = image_base64.unwrap();
+                json!([
+                    {
+                        "type": "text",
+                        "text": format!(
+                            "【划选上下文与待办归集判定】：\n{}\n\n请仔细观察附带的窗口截图顶部标题栏，识别出当前微信/企微会话或群聊名称，填入 detected_chat_target，并结合划选文本做出一次性归集与待办决策。",
+                            serde_json::to_string_pretty(&user_content).unwrap_or_default()
+                        )
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:image/jpeg;base64,{}", img_b64)
+                        }
+                    }
+                ])
+            } else {
+                json!(user_content.to_string())
+            };
+
+            json!({
+                "model": config.model_name,
+                "messages": [
+                    { "role": "system", "content": &system_prompt },
+                    { "role": "user", "content": user_content_val }
+                ],
+                "response_format": { "type": "json_object" },
+                "temperature": 0.2
+            })
+        };
 
         let start_time = Instant::now();
-        let resp = client
+        let try_with_image = image_base64.is_some();
+        let mut body = make_request_body(try_with_image);
+
+        let mut resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", config.api_key.trim()))
             .header("Content-Type", "application/json")
@@ -229,7 +277,27 @@ impl AIService {
             .await
             .map_err(|e| format!("网络请求错误: {}", e))?;
 
-        let status = resp.status();
+        let mut status = resp.status();
+
+        // 若多模态请求失败（例如当前模型不支持视觉输入报错 HTTP 400 Bad Request 等），优雅降级为纯文本重试一次
+        if try_with_image && !status.is_success() {
+            let err_text = resp.text().await.unwrap_or_default();
+            eprintln!(
+                "│ [多模态降级] 带图请求返回 HTTP {}: {}，尝试自动降级为纯文本模式重试...",
+                status, err_text
+            );
+            body = make_request_body(false);
+            resp = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", config.api_key.trim()))
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("纯文本降级网络请求错误: {}", e))?;
+            status = resp.status();
+        }
+
         let elapsed = start_time.elapsed().as_millis();
 
         if !status.is_success() {
@@ -275,6 +343,14 @@ impl AIService {
             .to_string();
         let confidence = parsed["confidence"].as_f64().unwrap_or(0.8);
         let matched_matter_id = parsed["matched_matter_id"].as_str().map(|s| s.to_string());
+        let detected_chat_target = parsed["detected_chat_target"]
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "null");
+
+        if let Some(ref target) = detected_chat_target {
+            println!("│ [多模态视觉识别] 成功从截图识别出群聊/会话: '{}'", target);
+        }
 
         let matched_matter_title = if let Some(ref mid) = matched_matter_id {
             active_matters
@@ -426,6 +502,7 @@ impl AIService {
             source_app: source_app.to_string(),
             source_window: source_window.to_string(),
             log_id: None,
+            detected_chat_target,
         })
     }
 
@@ -443,9 +520,9 @@ impl AIService {
 
         // 通用跨行业泛化停用词（避免由于都含有这些词造成不同事项间误匹配）
         const STOP_WORDS: &[&str] = &[
-            "任务", "工作", "事项", "项目", "沟通", "通知", "处理", "进行", "完成", "跟进",
-            "汇报", "对接", "讨论", "关于", "相关", "推进", "执行", "落实", "协同", "记录",
-            "内容", "方案", "文档", "材料", "表格", "清单", "计划", "测试", "要求",
+            "任务", "工作", "事项", "项目", "沟通", "通知", "处理", "进行", "完成", "跟进", "汇报",
+            "对接", "讨论", "关于", "相关", "推进", "执行", "落实", "协同", "记录", "内容", "方案",
+            "文档", "材料", "表格", "清单", "计划", "测试", "要求",
         ];
 
         let mut matched_matter: Option<&MatterContextWithTodos> = None;
@@ -650,6 +727,7 @@ impl AIService {
                 source_app: source_app.to_string(),
                 source_window: source_window.to_string(),
                 log_id: None,
+                detected_chat_target: None,
             }
         } else if candidates.len() >= 2 {
             println!(
@@ -684,6 +762,7 @@ impl AIService {
                 source_app: source_app.to_string(),
                 source_window: source_window.to_string(),
                 log_id: None,
+                detected_chat_target: None,
             }
         } else {
             println!("│ │ [决策结果] 未匹配到现有事项，建议新建");
@@ -722,6 +801,7 @@ impl AIService {
                 source_app: source_app.to_string(),
                 source_window: source_window.to_string(),
                 log_id: None,
+                detected_chat_target: None,
             }
         }
     }

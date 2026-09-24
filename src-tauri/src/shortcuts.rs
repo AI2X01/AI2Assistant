@@ -4,51 +4,62 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use crate::models::AppConfig;
 use crate::commands::DbState;
 
-/// 精准计算系统工作区，将 HUD 窗口对齐到桌面右下角（避开任务栏并适配各种 DPI 缩放）
+/// 精准计算当前显示器物理工作区，将 HUD 窗口对齐到桌面右下角（避开任务栏并完美适配高分屏 DPI 缩放）
 pub fn position_hud_window_bottom_right(hud_win: &tauri::WebviewWindow) {
-    #[cfg(windows)]
-    {
-        use windows::Win32::Foundation::RECT;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-        };
-
-        let mut work_area = RECT::default();
-        let success = unsafe {
-            SystemParametersInfoW(
-                SPI_GETWORKAREA,
-                0,
-                Some(&mut work_area as *mut _ as *mut _),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            )
-        };
-
-        if success.is_ok() && work_area.right > work_area.left && work_area.bottom > work_area.top {
-            let win_size = hud_win.outer_size().unwrap_or(tauri::PhysicalSize {
-                width: 360,
-                height: 76,
-            });
-            let margin = 16;
-            let x = work_area.right - (win_size.width as i32) - margin;
-            let y = work_area.bottom - (win_size.height as i32) - margin;
-            let _ = hud_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-            return;
-        }
-    }
-
-    // 兜底（非 Windows 或获取失败）
     if let Ok(Some(monitor)) = hud_win.current_monitor() {
-        let screen_size = monitor.size();
-        let scale = monitor.scale_factor();
+        let screen_size = monitor.size(); // 物理分辨率，如 2240 x 1400
+        let scale = monitor.scale_factor(); // 缩放比例，如 1.5
         let win_size = hud_win.outer_size().unwrap_or(tauri::PhysicalSize {
-            width: (360.0 * scale) as u32,
-            height: (76.0 * scale) as u32,
+            width: (380.0 * scale) as u32,
+            height: (80.0 * scale) as u32,
         });
-        let margin_x = (16.0 * scale) as i32;
-        let margin_y = (60.0 * scale) as i32; // 预留任务栏高度
+        let margin_x = (20.0 * scale) as i32;
+        let margin_y = (65.0 * scale) as i32; // 预留 Windows 任务栏物理高度
         let x = (screen_size.width as i32) - (win_size.width as i32) - margin_x;
         let y = (screen_size.height as i32) - (win_size.height as i32) - margin_y;
+        println!("│ [HUD 窗口定位] 屏幕: {}x{}, 缩放: {}, 窗口: {}x{}, 目标右下角坐标: ({}, {})",
+            screen_size.width, screen_size.height, scale, win_size.width, win_size.height, x, y
+        );
         let _ = hud_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+
+        #[cfg(windows)]
+        {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WS_VISIBLE,
+            };
+            if let Ok(hwnd) = hud_win.hwnd() {
+                unsafe {
+                    let win_hwnd = HWND(hwnd.0 as _);
+                    let style = GetWindowLongW(win_hwnd, GWL_STYLE) as u32;
+                    let is_visible = (style & WS_VISIBLE.0) != 0;
+
+                    if is_visible {
+                        // 窗口处于可见状态时，保持置顶并移动
+                        let _ = SetWindowPos(
+                            win_hwnd,
+                            HWND_TOPMOST,
+                            x,
+                            y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    } else {
+                        // 窗口处于隐藏状态时，仅更新坐标，绝不将其显示到屏幕上
+                        let _ = SetWindowPos(
+                            win_hwnd,
+                            HWND(std::ptr::null_mut()),
+                            x,
+                            y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -78,6 +89,7 @@ pub fn register_global_shortcuts(app: &AppHandle, config: &AppConfig) -> Result<
                     // 2. 抓取完成后，立即计算位置并唤起 HUD 窗口展示反馈
                     if let Some(hud_win) = handle.get_webview_window("hud") {
                         position_hud_window_bottom_right(&hud_win);
+                        let _ = hud_win.unminimize();
                         let _ = hud_win.show();
                         let _ = hud_win.set_always_on_top(true);
 

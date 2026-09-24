@@ -422,6 +422,14 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_log_source_window(&self, log_id: &str, source_window: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE logs SET source_window_title = ?1 WHERE id = ?2",
+            params![source_window, log_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_all_inbox_logs(&self) -> Result<Vec<InboxLogItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT l.id, l.matter_id, m.title, l.raw_content, l.source_app, l.source_window_title, l.created_at

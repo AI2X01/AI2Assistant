@@ -600,9 +600,22 @@ pub async fn process_captured_context_internal(
         &captured.text,
         &captured.source_app,
         &captured.source_window,
+        captured.image_base64.as_deref(),
     )
     .await;
     result.log_id = Some(log_id.clone());
+
+    // 若通过多模态识别出了精准群聊/会话名称，回填更新日志库与返回结果
+    if let Some(ref detected) = result.detected_chat_target {
+        let trimmed_target = detected.trim();
+        if !trimmed_target.is_empty() {
+            println!("│ [多模态群名更新] 从视觉精准识别出会话名称: '{}'，回写更新日志库与当前上下文", trimmed_target);
+            if let Ok(guard) = db.lock() {
+                let _ = guard.update_log_source_window(&log_id, trimmed_target);
+            }
+            result.source_window = trimmed_target.to_string();
+        }
+    }
 
     // 4. 判断是否达到自动归档阈值 (高置信度且已有明确事项)
     if result.action == "MATCH_EXISTING" && result.confidence >= config.auto_archive_confidence {
@@ -699,6 +712,7 @@ pub async fn manual_parse_text(
         &text,
         source_app.as_deref().unwrap_or("手动输入"),
         source_window.as_deref().unwrap_or(""),
+        None,
     )
     .await;
 
@@ -836,8 +850,7 @@ pub fn undo_todo_update(
 pub fn hide_hud_window(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("hud") {
         let _ = win.hide();
-        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 360.0, height: 76.0 }));
-        crate::shortcuts::position_hud_window_bottom_right(&win);
+        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 380.0, height: 80.0 }));
     }
     Ok(())
 }
@@ -846,10 +859,10 @@ pub fn hide_hud_window(app: AppHandle) -> Result<(), String> {
 pub fn resize_hud_window(app: AppHandle, mode: String) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("hud") {
         let (w, h) = match mode.as_str() {
-            "capsule" => (360.0, 76.0),
-            "expanded" => (380.0, 240.0),
-            "reminder" => (380.0, 260.0),
-            _ => (360.0, 76.0),
+            "capsule" => (380.0, 80.0),
+            "expanded" => (400.0, 250.0),
+            "reminder" => (400.0, 270.0),
+            _ => (380.0, 80.0),
         };
         let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w, height: h }));
         crate::shortcuts::position_hud_window_bottom_right(&win);
@@ -962,6 +975,7 @@ pub async fn extract_log_todos_and_summarize(
         &target_log.raw_content,
         &target_log.source_app,
         &target_log.source_window_title,
+        None,
     )
     .await;
 

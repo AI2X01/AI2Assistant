@@ -7,6 +7,8 @@ pub struct CapturedContext {
     pub text: String,
     pub source_app: String,
     pub source_window: String,
+    #[serde(default)]
+    pub image_base64: Option<String>,
 }
 
 pub struct ClipboardService;
@@ -33,7 +35,7 @@ impl ClipboardService {
         const CF_UNICODETEXT: u32 = 13;
 
         // 1. 获取当前前台窗口与应用名称（此时焦点 100% 在用户正在操作的前台应用中）
-        let (source_app, mut source_window, hwnd_val) = unsafe {
+        let (source_app, source_window, hwnd_val) = unsafe {
             let hwnd = GetForegroundWindow();
             let mut title = String::new();
             let mut app_name = String::from("未知应用");
@@ -214,16 +216,13 @@ impl ClipboardService {
 
         println!("\n[划选捕获] 成功获取选中文本: {} 字符 | 前台应用: '{}' | 前台窗口: '{}'", clean_text.chars().count(), source_app, source_window);
 
-        // 若来源应用是微信或企业微信，自动识别并提取当前具体的聊天对象或微信群名称
+        // 若来源应用是微信或企业微信，静默同步抓取当前会话标题栏图像，供 LLM 多模态直接统一归集
+        let mut image_base64 = None;
         if source_app == "微信" || source_app == "企业微信" {
             let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut std::ffi::c_void);
-            let detected_target = crate::services::wechat_detector::WechatDetector::detect_chat_target(
-                hwnd,
-                &source_window,
-                &clean_text,
-            );
-            if !detected_target.is_empty() {
-                source_window = detected_target;
+            image_base64 = crate::services::wechat_detector::WechatDetector::capture_chat_header_base64(hwnd);
+            if let Some(ref b64) = image_base64 {
+                println!("│ [多模态视觉感知] 已静默抓取微信当前会话标题图像 (Base64 大小: {} 字符)", b64.len());
             }
         }
 
@@ -231,6 +230,7 @@ impl ClipboardService {
             text: clean_text,
             source_app,
             source_window,
+            image_base64,
         })
     }
 
@@ -240,6 +240,7 @@ impl ClipboardService {
             text: "测试划选内容：周三上午10点前需要提交技术白皮书。".to_string(),
             source_app: "Mock 应用".to_string(),
             source_window: "测试会话".to_string(),
+            image_base64: None,
         })
     }
 }

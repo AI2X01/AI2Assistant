@@ -76,6 +76,7 @@ export interface CapturedContext {
   text: string;
   source_app: string;
   source_window: string;
+  image_base64?: string;
 }
 
 export interface ExtractedTodo {
@@ -120,6 +121,7 @@ export interface AIParseResult {
   source_app: string;
   source_window: string;
   log_id?: string;
+  detected_chat_target?: string;
 }
 
 export interface ConfirmRoutePayload {

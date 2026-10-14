@@ -19,6 +19,10 @@ static IS_QUITTING: AtomicBool = AtomicBool::new(false);
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            println!("[SingleInstance] 监测到尝试重复启动实例，正在唤起激活已存在的主看板窗口...");
+            show_or_create_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -195,6 +199,15 @@ pub fn run() {
 
 /// 显示或重新创建主看板窗口（双保险）
 pub fn show_or_create_main_window(app: &tauri::AppHandle) {
+    // 1. 若当前处于桌面边缘吸附/缩略停靠模式，自动展开并退出紧凑模式，恢复完整主看板
+    if crate::commands::IS_COMPACT_MODE.load(Ordering::SeqCst) {
+        println!("[MainWin] 当前处于边缘缩略停靠模式，自动唤醒并恢复完整主看板");
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::commands::exit_compact_mode(handle).await;
+        });
+    }
+
     if let Some(win) = app.get_webview_window("main") {
         println!("[MainWin] 正在还原并激活主看板窗口...");
         let _ = win.show();
@@ -203,6 +216,23 @@ pub fn show_or_create_main_window(app: &tauri::AppHandle) {
         // 瞬间置顶再恢复，突破 Windows 后台窗口防抢焦限制
         let _ = win.set_always_on_top(true);
         let _ = win.set_always_on_top(false);
+
+        #[cfg(windows)]
+        {
+            if let Ok(hwnd) = win.hwnd() {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    BringWindowToTop, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+                };
+                unsafe {
+                    let win_hwnd = HWND(hwnd.0 as _);
+                    let _ = ShowWindow(win_hwnd, SW_RESTORE);
+                    let _ = ShowWindow(win_hwnd, SW_SHOW);
+                    let _ = BringWindowToTop(win_hwnd);
+                    let _ = SetForegroundWindow(win_hwnd);
+                }
+            }
+        }
     } else {
         println!("[MainWin] main 窗口不存在，正在通过 WebviewWindowBuilder 动态重新拉起...");
         if let Ok(win) = tauri::WebviewWindowBuilder::new(
